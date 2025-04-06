@@ -110,5 +110,5 @@ app.post('/slack/events', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Slack LLM bot is running on port ${PORT}`);
+  console.log(`DeepOrbit bot is running on port ${PORT}`);
 });
