@@ -61,6 +61,7 @@ async function sendIntroMessage(channel, thread_ts) {
   const introKey = `intro:${thread_ts}`;
   const alreadySeen = await redisClient.get(introKey);
   if (!alreadySeen) {
+    console.log("💬 Responding in Slack with:", reply);
     await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
       text: '🛰 Hello. I’m *DeepOrbit*. I intelligently route your questions across knowledge space. You can tag me or use `#{workspace}` to guide me.',
@@ -76,11 +77,16 @@ async function sendIntroMessage(channel, thread_ts) {
 }
 
 app.post('/slack/events', async (req, res) => {
-  console.log('Received event:', event)
+  console.log("📥 Received Slack event:", JSON.stringify(req.body, null, 2));
   const { type, challenge, event } = req.body;
-  if (type === 'url_verification') return res.send({ challenge });
+
+  if (type === 'url_verification') {
+    console.log("✅ URL verification challenge received.");
+    return res.send({ challenge });
+}
 
   if (event && event.type === 'app_mention') {
+    console.log("📌 app_mention received:", event);
     let text = event.text;
     const channel = event.channel;
     const thread_ts = event.thread_ts || event.ts;
@@ -91,6 +97,7 @@ app.post('/slack/events', async (req, res) => {
     text = text.replace(/#\{[^}]+\}/, '').trim();
 
     if (!workspace) {
+    console.log("🧠 No workspace specified. Using public LLM to detect appropriate workspace...");
       try {
         workspace = await determineWorkspaceFromPublic(text);
       } catch (err) {
@@ -102,7 +109,8 @@ app.post('/slack/events', async (req, res) => {
     const existingThreadId = await redisClient.get(redisKey);
 
     try {
-      const llmRes = await axios.post(`${ANYTHINGLLM_API}/query`, {
+      console.log("🔗 Sending to AnythingLLM:", { message: text, workspace, threadId: existingThreadId || null });
+    const llmRes = await axios.post(`${ANYTHINGLLM_API}/query`, {
         message: text,
         workspace,
         threadId: existingThreadId || null
@@ -120,7 +128,8 @@ app.post('/slack/events', async (req, res) => {
       // Intro message (once per thread)
       await sendIntroMessage(channel, thread_ts);
 
-      await axios.post('https://slack.com/api/chat.postMessage', {
+      console.log("💬 Responding in Slack with:", reply);
+    await axios.post('https://slack.com/api/chat.postMessage', {
         channel,
         text: reply,
         thread_ts
@@ -157,6 +166,7 @@ let question = text || '';
   question = question.replace(/#\{[^}]+\}/, '').trim();
 
   if (!workspace) {
+    console.log("🧠 No workspace specified. Using public LLM to detect appropriate workspace...");
     try {
       workspace = await determineWorkspaceFromPublic(question);
     } catch (err) {
