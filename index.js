@@ -35,7 +35,10 @@ function verifySlackRequest(req, res, buf) {
 app.use(bodyParser.json({ verify: verifySlackRequest }));
 
 async function determineWorkspaceFromPublic(message) {
-  const prompt = `I have a user question: "${message}". Based on the available workspaces: GF Stripe, GF PayPal Checkout, gravityforms core, gravityflow, docs, internal docs, github, data provider — which workspace is the best match for this question? Just return the exact name of the best matching workspace.`;
+  if (!message || typeof message !== 'string' || message.trim().length === 0) {
+  throw new Error("Empty or invalid message received.");
+}
+const prompt = `I have a user question: "${message.trim()}". Based on the available workspaces: GF Stripe, GF PayPal Checkout, gravityforms core, gravityflow, docs, internal docs, github, data provider — which workspace is the best match for this question? Just return the exact name of the best matching workspace.`;
 
   const res = await axios.post(`${ANYTHINGLLM_API}/query`, {
     message: prompt,
@@ -145,7 +148,10 @@ app.listen(PORT, () => {
 app.post('/slack/askllm', async (req, res) => {
   const { text, user_id, channel_id, response_url } = req.body;
 
-  let question = text || '';
+  if (!text || text.trim().length === 0) {
+    return res.status(200).send("⚠️ You need to include a question. Try `/askllm how do I reset a password?`");
+}
+let question = text || '';
   const workspaceMatch = question.match(/#\{([^}]+)\}/);
   let workspace = workspaceMatch ? workspaceMatch[1] : null;
   question = question.replace(/#\{[^}]+\}/, '').trim();
