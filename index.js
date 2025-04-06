@@ -76,8 +76,8 @@ async function sendIntroMessage(channel, thread_ts) {
 }
 
 app.post('/slack/events', async (req, res) => {
+  console.log('Received event:', event)
   const { type, challenge, event } = req.body;
-
   if (type === 'url_verification') return res.send({ challenge });
 
   if (event && event.type === 'app_mention') {
