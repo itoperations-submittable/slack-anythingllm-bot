@@ -34,17 +34,42 @@ function verifySlackRequest(req, res, buf) {
 }
 app.use(bodyParser.json({ verify: verifySlackRequest }));
 
-async function determineWorkspaceFromGeneral(message) {
+async function determineWorkspaceFromPublic(message) {
   const prompt = `I have a user question: "${message}". Based on the available workspaces: GF Stripe, GF PayPal Checkout, gravityforms core, gravityflow, docs, internal docs, github, data provider — which workspace is the best match for this question? Just return the exact name of the best matching workspace.`;
 
   const res = await axios.post(`${ANYTHINGLLM_API}/query`, {
     message: prompt,
-    workspace: 'general'
+    workspace: 'public'
   }, {
     headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
   });
 
-  return res.data.response.trim();
+  const result = res.data.response.trim();
+
+  // Log decision to Redis and console
+  const logKey = `log:${Date.now()}`;
+  await redisClient.set(logKey, JSON.stringify({ original: message, decided: result, ts: Date.now() }));
+  console.log(`[DeepOrbit] Workspace decision: "${result}" for message: "${message}"`);
+
+  return result;
+}
+
+async function sendIntroMessage(channel, thread_ts) {
+  const introKey = `intro:${thread_ts}`;
+  const alreadySeen = await redisClient.get(introKey);
+  if (!alreadySeen) {
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      text: '🛰 Hello. I’m *DeepOrbit*. I intelligently route your questions across knowledge space. You can tag me or use `#{workspace}` to guide me.',
+      thread_ts
+    }, {
+      headers: {
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    await redisClient.set(introKey, 'true');
+  }
 }
 
 app.post('/slack/events', async (req, res) => {
@@ -64,7 +89,7 @@ app.post('/slack/events', async (req, res) => {
 
     if (!workspace) {
       try {
-        workspace = await determineWorkspaceFromGeneral(text);
+        workspace = await determineWorkspaceFromPublic(text);
       } catch (err) {
         console.error('Error determining workspace:', err);
         return res.status(500).send('Failed to determine workspace');
@@ -89,6 +114,9 @@ app.post('/slack/events', async (req, res) => {
         await redisClient.set(redisKey, threadId);
       }
 
+      // Intro message (once per thread)
+      await sendIntroMessage(channel, thread_ts);
+
       await axios.post('https://slack.com/api/chat.postMessage', {
         channel,
         text: reply,
@@ -111,4 +139,46 @@ app.post('/slack/events', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`DeepOrbit bot is running on port ${PORT}`);
+});
+
+
+app.post('/slack/askllm', async (req, res) => {
+  const { text, user_id, channel_id, response_url } = req.body;
+
+  let question = text || '';
+  const workspaceMatch = question.match(/#\{([^}]+)\}/);
+  let workspace = workspaceMatch ? workspaceMatch[1] : null;
+  question = question.replace(/#\{[^}]+\}/, '').trim();
+
+  if (!workspace) {
+    try {
+      workspace = await determineWorkspaceFromPublic(question);
+    } catch (err) {
+      console.error('Error determining workspace (slash command):', err);
+      return res.status(200).send("⚠️ Couldn't determine the right workspace.");
+    }
+  }
+
+  try {
+    const response = await axios.post(`${ANYTHINGLLM_API}/query`, {
+      message: question,
+      workspace
+    }, {
+      headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
+    });
+
+    const answer = response.data.response || 'No response from DeepOrbit.';
+
+    // Send reply via Slack's response_url
+    await axios.post(response_url, {
+      response_type: "in_channel",
+      text: `*DeepOrbit* (${workspace}):
+${answer}`
+    });
+
+    res.status(200).end();
+  } catch (err) {
+    console.error('Error in /askllm handler:', err.response?.data || err.message);
+    res.status(200).send("❌ Something went wrong asking DeepOrbit.");
+  }
 });
