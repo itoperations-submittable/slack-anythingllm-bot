@@ -1,294 +1,129 @@
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-const bodyParser = require('body-parser');
-const crypto = require('crypto');
-const { createClient } = require('redis');
+// index.js
+import express from 'express';
+import axios from 'axios';
+import { createClient } from 'redis';
+import bodyParser from 'body-parser';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
+const port = process.env.PORT || 3000;
+const redisUrl = process.env.REDIS_URL;
+const anythingLLMBaseURL = process.env.LLM_URL;
+const anythingLLMApiKey = process.env.LLM_API_KEY;
+const developerId = process.env.DEVELOPER_ID;
 
-// Use environment variable or fallback to 3000
-const PORT = process.env.PORT || 3000;
+let validWorkspaces = [ 'public' ];
 
-const {
-  SLACK_BOT_TOKEN,
-  SLACK_SIGNING_SECRET,
-  ANYTHINGLLM_API,
-  ANYTHINGLLM_API_KEY,
-  REDIS_URL,
-  DEV_MODE,
-  DEVELOPER_ID
-} = process.env;
-
-// Slack signature verification
+// Middleware to verify Slack request
 function verifySlackRequest(req, res, buf) {
-  console.log('[VERIFY] Checking Slack signature');
-  const timestamp = req.headers['x-slack-request-timestamp'];
-  const slackSig = req.headers['x-slack-signature'];
-  const baseString = `v0:${timestamp}:${buf}`;
-  const mySig = 'v0=' + crypto
-    .createHmac('sha256', SLACK_SIGNING_SECRET)
-    .update(baseString)
-    .digest('hex');
-
-  if (!slackSig || !crypto.timingSafeEqual(Buffer.from(mySig), Buffer.from(slackSig))) {
-    console.error('[VERIFY] Invalid Slack signature');
-    res.status(400).send('Invalid signature');
+  const slackSignature = req.headers['x-slack-signature'];
+  const requestTimestamp = req.headers['x-slack-request-timestamp'];
+  const hmac = crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET);
+  const [version, hash] = slackSignature.split('=');
+  hmac.update(`${version}:${requestTimestamp}:${buf.toString()}`);
+  const digest = hmac.digest('hex');
+  if (digest !== hash) {
     throw new Error('Invalid Slack signature');
   }
 }
 
 app.use(bodyParser.json({ verify: verifySlackRequest }));
-app.use('/slack/askllm', bodyParser.urlencoded({ extended: true }));
 
-// Redis init
-let redisClient;
-if (DEV_MODE === 'true') {
-  console.log('[REDIS] DEV_MODE: Using mock Redis');
-  redisClient = {
-    get: async () => null,
-    set: async () => {},
-    del: async () => {},
-    on: () => {}
-  };
-} else {
-  console.log('[REDIS] Connecting to real Redis:', REDIS_URL);
-  redisClient = createClient({ url: REDIS_URL });
-  redisClient.on('error', err => console.error('[REDIS] Error:', err));
-  redisClient.connect().then(() => console.log('[REDIS] Connected!'));
-}
+// Connect to Redis
+const redis = createClient({ url: redisUrl });
+redis.on('error', (err) => console.error('Redis error:', err));
+redis.connect().then(() => console.log('Redis connected!'));
 
-// Slugify function
-function toSlug(str) {
-  return str
-    .toLowerCase()
-    .replace(/[^\w\s]/g, '')
-    .replace(/\s+/g, '-');
-}
-
-// Step 1: LLM decides workspace
-async function llmChooseWorkspace(question, sessionId) {
-  console.log('[WORKSPACE] Deciding for =>', question);
-
-  const prompt = `I have a user question: "${question}". Based on the available workspaces: GF Stripe, GF PayPal Checkout, Gravity Forms Core, GravityFlow, Docs, Internal Docs, GitHub, Data Provider, which is best? Return ONLY that workspace name.`;
+// Load workspaces from AnythingLLM
+async function fetchWorkspaces() {
   try {
-    const res = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/public/chat`, {
-      message: prompt,
-      mode: 'chat',
-      sessionId: `decide-${sessionId}`
-    }, {
-      headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
+    const res = await axios.get(`${anythingLLMBaseURL}/v1/workspaces`, {
+      headers: { Authorization: `Bearer ${anythingLLMApiKey}` }
     });
-    const chosenRaw = (res.data.textResponse || 'public').trim();
-    console.log('[WORKSPACE] LLM raw =>', chosenRaw);
-    const chosenSlug = toSlug(chosenRaw);
-    console.log('[WORKSPACE] final slug =>', chosenSlug);
-    return chosenSlug || 'public';
+    validWorkspaces = res.data.map(w => w.slug);
+    console.log('[BOOT] Valid workspaces loaded:', validWorkspaces);
   } catch (err) {
-    console.error('[WORKSPACE] Decision error =>', err.message);
-    return 'public';
+    console.error('[BOOT] Failed to fetch workspaces:', err.message);
   }
 }
 
-// Step 2: Chat
-async function llmChat(question, workspace, sessionId) {
-  console.log(`[LLM:CHAT] question="${question}" workspace="${workspace}" sessionId="${sessionId}"`);
+await fetchWorkspaces();
 
-  // Basic greeting
-  const greet = [ 'hi','hello','hey','help','what can you do','who are you' ];
-  if (!question || greet.some(g => question.toLowerCase().includes(g))) {
-    return `👋 Hello! I'm DeepOrbit. I can help:
-- Stripe or PayPal
-- Gravity Forms
-- GravityFlow
-- Docs/Internal Docs
+// Slack event endpoint
+app.post('/slack/events', async (req, res) => {
+  const event = req.body.event;
+  const userId = event?.user;
+  const channelId = event?.channel;
+  const text = event?.text;
+  const isDM = req.body.event?.channel_type === 'im';
 
-Ask me anything!`;
+  // Avoid bot loops
+  if (event.bot_id) return res.sendStatus(200);
+
+  // Developer-only gate (DM only)
+  if (isDM && userId !== developerId) {
+    await postToSlack(channelId, `:hourglass_flowing_sand: I'm under development. Please wait for the developer to open me up!`);
+    console.log('[EVENT] Non-developer DM => ignoring');
+    return res.sendStatus(200);
   }
 
+  // Retrieve user's last workspace from Redis
+  let workspace = await redis.get(`user:${userId}:workspace`) || 'public';
+
+  // Send to LLM
   try {
-    const ep = `${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`;
-    console.log('[LLM:CHAT] endpoint =>', ep);
-    const chatRes = await axios.post(ep, {
-      message,
+    const response = await axios.post(`${anythingLLMBaseURL}/api/v1/workspace/${workspace}/chat`, {
+      message: text,
       mode: 'chat',
-      sessionId
+      sessionId: userId
     }, {
-      headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
+      headers: {
+        Authorization: `Bearer ${anythingLLMApiKey}`,
+        'Content-Type': 'application/json'
+      }
     });
-
-    const textResp = chatRes.data.textResponse || 'No response.';
-    return `🛰 *Workspace: ${workspace}*\n${textResp}`;
-  } catch(e) {
-    console.error('[LLM:CHAT] Chat error =>', e.message);
-    return `⚠️ Failed to talk to workspace "${workspace}". Using public fallback...`;
+    const reply = response.data.textResponse || '...';
+    await postToSlack(channelId, reply);
+  } catch (err) {
+    console.error(`[LLM ERROR] Failed to talk to workspace "${workspace}":`, err.message);
+    await postToSlack(channelId, `:warning: Failed to talk to workspace "${workspace}". Using public fallback...`);
+    try {
+      const fallback = await axios.post(`${anythingLLMBaseURL}/api/v1/workspace/public/chat`, {
+        message: text,
+        mode: 'chat',
+        sessionId: userId
+      }, {
+        headers: { Authorization: `Bearer ${anythingLLMApiKey}` }
+      });
+      await postToSlack(channelId, fallback.data.textResponse || '...');
+    } catch (err2) {
+      console.error('[FALLBACK ERROR]', err2.message);
+      await postToSlack(channelId, ':boom: I'm having trouble reaching the LLM. Please try again later.');
+    }
   }
-}
 
-async function postThinking(channel, thread_ts, isDM) {
-  console.log('[THINKING] channel =>', channel, ' thread =>', thread_ts);
-  const payload = {
-    channel,
-    text: ':hourglass_flowing_sand: Thinking...'
-  };
-  if (!isDM) payload.thread_ts = thread_ts;
+  res.sendStatus(200);
+});
 
+async function postToSlack(channel, text) {
   try {
-    const r = await axios.post('https://slack.com/api/chat.postMessage', payload, {
-      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-    });
-    return r.data.ts;
-  } catch(err) {
-    console.error('[THINKING] Error =>', err.message);
-    return null;
-  }
-}
-
-async function updateMessage(channel, ts, text) {
-  if (!ts) return;
-  try {
-    await axios.post('https://slack.com/api/chat.update', {
+    await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
-      ts,
       text
     }, {
-      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
     });
   } catch (err) {
-    console.error('[UPDATE] chat.update error =>', err.message);
+    console.error('[SLACK ERROR]', err.message);
   }
 }
 
-app.post('/slack/events', async (req, res) => {
-  console.log('[EVENTS] =>', JSON.stringify(req.body, null, 2));
-  res.status(200).end();
-
-  const { type, event, event_id } = req.body;
-
-  if (!event) {
-    console.log('[EVENTS] no event?');
-    return;
-  }
-  if (event.bot_id || event.subtype === 'bot_message') {
-    console.log('[EVENTS] Skipping bot message');
-    return;
-  }
-
-  // Developer DM check
-  const isDM = event.channel_type === 'im';
-  if (isDM && DEVELOPER_ID && event.user !== DEVELOPER_ID) {
-    console.log('[EVENTS] Non-dev in DM => dev message');
-    try {
-      await axios.post('https://slack.com/api/chat.postMessage', {
-        channel: event.channel,
-        text: ":octagonal_sign: I'm under development. I'm only talking to the mothership now."
-      }, {
-        headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-      });
-    } catch(e) {
-      console.error('[EVENTS] dev notice error =>', e.message);
-    }
-    return;
-  }
-
-  // app_home
-  if (type === 'event_callback' && event.type === 'app_home_opened') {
-    console.log('[APP HOME] user =>', event.user);
-    try {
-      await axios.post('https://slack.com/api/views.publish', {
-        user_id: event.user,
-        view: {
-          type: 'home',
-          blocks: [
-            {
-              type: 'section',
-              text: { type: 'mrkdwn', text: '*Welcome to DeepOrbit App Home!*' }
-            },
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: '- Stripe/PayPal\n- Gravity Forms\n- GravityFlow\n- Docs/Internal Docs'
-              }
-            }
-          ]
-        }
-      }, {
-        headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-      });
-      console.log('[APP HOME] published');
-    } catch(e) {
-      console.error('[APP HOME] error =>', e.message);
-    }
-    return;
-  }
-
-  if (!event.text) {
-    console.log('[EVENTS] no text');
-    return;
-  }
-
-  // Deduplicate events
-  try {
-    const done = await redisClient.get(`event:${event_id}`);
-    if (done) {
-      console.log('[EVENTS] already handled =>', event_id);
-      return;
-    }
-    await redisClient.set(`event:${event_id}`, '1', { EX: 60 });
-  } catch(e) {
-    console.error('[EVENTS] deduplicate error =>', e.message);
-  }
-
-  const question = event.text.trim();
-  console.log('[EVENTS] user asked =>', question);
-
-  // Step 1 => LLM picks workspace
-  const workspace = await llmChooseWorkspace(question, event.user);
-
-  // Step 2 => Chat
-  const finalReply = await llmChat(question, workspace, event.user);
-
-  // show hourglass, then finalize
-  const threadTs = event.thread_ts || event.ts;
-  const thinkTs = await postThinking(event.channel, threadTs, isDM);
-  await updateMessage(event.channel, thinkTs, finalReply);
-});
-
-// Slash command
-app.post('/slack/askllm', async (req, res) => {
-  console.log('[ASKLLM] => payload', JSON.stringify(req.body, null, 2));
-  const { text, user_id, response_url } = req.body;
-
-  res.status(200).end();
-
-  if (!text || !text.trim()) {
-    console.log('[ASKLLM] no text');
-    await axios.post(response_url, {
-      text: '⚠️ Provide a question please.'
-    });
-    return;
-  }
-
-  // dev check
-  if (DEVELOPER_ID && user_id !== DEVELOPER_ID) {
-    console.log('[ASKLLM] non-dev slash => ignoring');
-    await axios.post(response_url, {
-      text: "⏳ I'm under dev mode, you can't talk to me right now."
-    });
-    return;
-  }
-
-  // Show hourglass
-  await axios.post(response_url, { text: ':hourglass_flowing_sand: Thinking...' });
-
-  // pick workspace + chat
-  const workspace = await llmChooseWorkspace(text, user_id);
-  const finalChat = await llmChat(text, workspace, user_id);
-
-  await axios.post(response_url, { text: finalChat });
-});
-
-app.listen(PORT, () => {
-  console.log(`[STARTUP] DeepOrbit on port ${PORT}, dev DM logic + LLM decides workspace`);
+app.listen(port, () => {
+  console.log(`App listening on port ${port}`);
 });
