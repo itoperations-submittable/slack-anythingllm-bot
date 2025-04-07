@@ -1,129 +1,128 @@
 // index.js
 import express from 'express';
-import axios from 'axios';
-import { createClient } from 'redis';
 import bodyParser from 'body-parser';
 import crypto from 'crypto';
+import axios from 'axios';
 import dotenv from 'dotenv';
+import Redis from 'ioredis';
+import { WebClient } from '@slack/web-api';
 
+// Load environment variables
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
-const redisUrl = process.env.REDIS_URL;
-const anythingLLMBaseURL = process.env.LLM_URL;
-const anythingLLMApiKey = process.env.LLM_API_KEY;
-const developerId = process.env.DEVELOPER_ID;
+const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+const redis = new Redis(process.env.REDIS_URL);
+const PORT = process.env.PORT || 3000;
 
-let validWorkspaces = [ 'public' ];
+const DEV_MODE = process.env.DEV_MODE === 'true';
+const DEVELOPER_ID = process.env.DEVELOPER_ID;
+const SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
 
-// Middleware to verify Slack request
+let activeWorkspaceBySession = new Map();
+
+app.use(bodyParser.json({ verify: verifySlackRequest }));
+
+// Slack signature verification middleware
 function verifySlackRequest(req, res, buf) {
-  const slackSignature = req.headers['x-slack-signature'];
-  const requestTimestamp = req.headers['x-slack-request-timestamp'];
-  const hmac = crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET);
-  const [version, hash] = slackSignature.split('=');
-  hmac.update(`${version}:${requestTimestamp}:${buf.toString()}`);
-  const digest = hmac.digest('hex');
-  if (digest !== hash) {
+  const timestamp = req.headers['x-slack-request-timestamp'];
+  const sigBaseString = `v0:${timestamp}:${buf.toString()}`;
+  const hmac = crypto.createHmac('sha256', SIGNING_SECRET);
+  hmac.update(sigBaseString);
+  const expectedSignature = `v0=${hmac.digest('hex')}`;
+  const actualSignature = req.headers['x-slack-signature'];
+
+  if (!crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(actualSignature))) {
     throw new Error('Invalid Slack signature');
   }
 }
 
-app.use(bodyParser.json({ verify: verifySlackRequest }));
-
-// Connect to Redis
-const redis = createClient({ url: redisUrl });
-redis.on('error', (err) => console.error('Redis error:', err));
-redis.connect().then(() => console.log('Redis connected!'));
-
-// Load workspaces from AnythingLLM
+// Utility: fetch workspace list from AnythingLLM
 async function fetchWorkspaces() {
   try {
-    const res = await axios.get(`${anythingLLMBaseURL}/v1/workspaces`, {
-      headers: { Authorization: `Bearer ${anythingLLMApiKey}` }
+    const response = await axios.get(`${process.env.ANYTHINGLLM_URL}/api/v1/workspaces`, {
+      headers: {
+        Authorization: `Bearer ${process.env.ANYTHINGLLM_API_KEY}`
+      }
     });
-    validWorkspaces = res.data.map(w => w.slug);
-    console.log('[BOOT] Valid workspaces loaded:', validWorkspaces);
+    return response.data.workspaces || [];
   } catch (err) {
-    console.error('[BOOT] Failed to fetch workspaces:', err.message);
+    console.error('[ERROR] Failed to fetch workspaces:', err);
+    return [];
   }
 }
 
-await fetchWorkspaces();
-
-// Slack event endpoint
-app.post('/slack/events', async (req, res) => {
-  const event = req.body.event;
-  const userId = event?.user;
-  const channelId = event?.channel;
-  const text = event?.text;
-  const isDM = req.body.event?.channel_type === 'im';
-
-  // Avoid bot loops
-  if (event.bot_id) return res.sendStatus(200);
-
-  // Developer-only gate (DM only)
-  if (isDM && userId !== developerId) {
-    await postToSlack(channelId, `:hourglass_flowing_sand: I'm under development. Please wait for the developer to open me up!`);
-    console.log('[EVENT] Non-developer DM => ignoring');
-    return res.sendStatus(200);
-  }
-
-  // Retrieve user's last workspace from Redis
-  let workspace = await redis.get(`user:${userId}:workspace`) || 'public';
-
-  // Send to LLM
+// Utility: send message to Slack
+async function sendMessage(channel, text) {
   try {
-    const response = await axios.post(`${anythingLLMBaseURL}/api/v1/workspace/${workspace}/chat`, {
-      message: text,
-      mode: 'chat',
-      sessionId: userId
-    }, {
-      headers: {
-        Authorization: `Bearer ${anythingLLMApiKey}`,
-        'Content-Type': 'application/json'
-      }
-    });
-    const reply = response.data.textResponse || '...';
-    await postToSlack(channelId, reply);
+    await slackClient.chat.postMessage({ channel, text });
   } catch (err) {
-    console.error(`[LLM ERROR] Failed to talk to workspace "${workspace}":`, err.message);
-    await postToSlack(channelId, `:warning: Failed to talk to workspace "${workspace}". Using public fallback...`);
-    try {
-      const fallback = await axios.post(`${anythingLLMBaseURL}/api/v1/workspace/public/chat`, {
-        message: text,
-        mode: 'chat',
-        sessionId: userId
-      }, {
-        headers: { Authorization: `Bearer ${anythingLLMApiKey}` }
-      });
-      await postToSlack(channelId, fallback.data.textResponse || '...');
-    } catch (err2) {
-      console.error('[FALLBACK ERROR]', err2.message);
-      await postToSlack(channelId, ':boom: I am having trouble reaching the LLM. Please try again later.');
-    }
+    console.error('[ERROR] Failed to send Slack message:', err);
+  }
+}
+
+// Event endpoint
+app.post('/slack/events', async (req, res) => {
+  const { event, type } = req.body;
+  res.sendStatus(200);
+
+  if (type !== 'event_callback') return;
+  if (!event || event.bot_id || !event.text) return;
+
+  const isDM = event.channel_type === 'im';
+  const isDeveloper = event.user === DEVELOPER_ID;
+  const channel = event.channel;
+
+  if (DEV_MODE && (!isDeveloper && isDM)) {
+    console.log('[EVENT] Non-developer DM => ignoring');
+    return;
   }
 
-  res.sendStatus(200);
+  // Get or fallback workspace
+  const sessionId = event.user;
+  const activeWorkspace = activeWorkspaceBySession.get(sessionId) || 'public';
+
+  // Send message to AnythingLLM workspace
+  const llmRes = await talkToLLM(activeWorkspace, event.text, sessionId);
+
+  if (llmRes && llmRes.type === 'abort' && llmRes.error?.includes('not a valid workspace')) {
+    await sendMessage(channel, `:warning: Failed to talk to workspace "${activeWorkspace}". Using public fallback...`);
+    const fallbackRes = await talkToLLM('public', event.text, sessionId);
+    if (fallbackRes?.textResponse) await sendMessage(channel, fallbackRes.textResponse);
+  } else if (llmRes?.textResponse) {
+    await sendMessage(channel, llmRes.textResponse);
+  }
 });
 
-async function postToSlack(channel, text) {
+// Utility: talk to AnythingLLM
+async function talkToLLM(workspace, message, sessionId) {
   try {
-    await axios.post('https://slack.com/api/chat.postMessage', {
-      channel,
-      text
-    }, {
-      headers: {
-        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
-        'Content-Type': 'application/json'
+    const response = await axios.post(
+      `${process.env.ANYTHINGLLM_URL}/api/v1/workspace/${workspace}/chat`,
+      {
+        message,
+        mode: 'chat',
+        sessionId
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.ANYTHINGLLM_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
       }
-    });
+    );
+    return response.data;
   } catch (err) {
-    console.error('[SLACK ERROR]', err.message);
+    console.error('[ERROR] Failed to talk to workspace:', err?.response?.data || err);
+    return null;
   }
 }
 
-app.listen(port, () => {
-  console.log(`App listening on port ${port}`);
+// Show logs on Render
+app.get('/', (req, res) => {
+  res.send('DeepOrbit is live');
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
