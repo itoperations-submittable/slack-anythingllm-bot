@@ -2,9 +2,25 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
+const crypto = require('crypto');
 const { createClient } = require('redis');
 
 const app = express();
+
+function verifySlackRequest(req, res, buf) {
+  const timestamp = req.headers['x-slack-request-timestamp'];
+  const slackSig = req.headers['x-slack-signature'];
+  const baseString = `v0:${timestamp}:${buf}`;
+  const mySig = 'v0=' + crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET).update(baseString).digest('hex');
+
+  const isValid = crypto.timingSafeEqual(Buffer.from(mySig), Buffer.from(slackSig));
+  if (!isValid) {
+    res.status(400).send('Invalid signature');
+    throw new Error('Invalid Slack signature');
+  }
+}
+
+app.use(bodyParser.json({ verify: verifySlackRequest }));
 
 const {
   SLACK_BOT_TOKEN,
@@ -18,10 +34,6 @@ redisClient.on('error', err => console.error('Redis Client Error', err));
 (async () => await redisClient.connect())();
 
 async function determineWorkspaceFromPublic(message) {
-  if (!message || typeof message !== 'string' || message.trim().length === 0) {
-    throw new Error("Empty or invalid message received.");
-  }
-
   const prompt = `I have a user question: "${message.trim()}". Based on the available workspaces: GF Stripe, GF PayPal Checkout, gravityforms core, gravityflow, docs, internal docs, github, data provider — which workspace is the best match for this question? Just return the exact name of the best matching workspace.`;
 
   const res = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/public/chat`, {
@@ -47,7 +59,7 @@ async function sendIntroMessage(channel, thread_ts) {
   if (!alreadySeen) {
     await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
-      text: '🛰 Hello. I’m *DeepOrbit*. I intelligently route your questions across knowledge space. You can tag me or use `#{workspace}` to guide me.',
+      text: '🛰 Hello. I’m *DeepOrbit*. Tag me with your question or use `/askllm`.\nAdd `#{workspace}` to guide me.',
       thread_ts
     }, {
       headers: {
@@ -104,7 +116,7 @@ app.post('/slack/events', async (req, res) => {
               elements: [
                 {
                   type: "mrkdwn",
-                  text: "_Built with LLMs. Powered by your data._"
+                  text: "_Built with AnythingLLM. Powered by your data._"
                 }
               ]
             }
@@ -138,7 +150,6 @@ app.post('/slack/events', async (req, res) => {
     text = text.replace(/#\{[^}]+\}/, '').trim();
 
     if (!workspace) {
-      console.log("🧠 No workspace specified. Using public LLM to detect appropriate workspace...");
       try {
         workspace = await determineWorkspaceFromPublic(text);
       } catch (err) {
@@ -147,11 +158,7 @@ app.post('/slack/events', async (req, res) => {
       }
     }
 
-    const existingThreadId = await redisClient.get(redisKey);
-
     try {
-      console.log("🔗 Sending to AnythingLLM:", { message: text, workspace, thread_ts });
-
       const llmRes = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
         message: text,
         mode: "chat",
@@ -161,15 +168,8 @@ app.post('/slack/events', async (req, res) => {
       });
 
       const reply = llmRes.data.textResponse || 'No response.';
-      const threadId = llmRes.data.id;
-
-      if (!existingThreadId && threadId) {
-        await redisClient.set(redisKey, threadId);
-      }
-
       await sendIntroMessage(channel, thread_ts);
 
-      console.log("💬 Responding in Slack with:", reply);
       await axios.post('https://slack.com/api/chat.postMessage', {
         channel,
         text: reply,
@@ -189,7 +189,54 @@ app.post('/slack/events', async (req, res) => {
   res.status(200).end();
 });
 
+app.post('/slack/askllm', async (req, res) => {
+  const { text, user_id, channel_id, response_url } = req.body;
+  res.status(200).send("⏳ DeepOrbit is thinking...");
+
+  try {
+    let question = text || '';
+    const workspaceMatch = question.match(/#\{([^}]+)\}/);
+    let workspace = workspaceMatch ? workspaceMatch[1] : null;
+    question = question.replace(/#\{[^}]+\}/, '').trim();
+
+    if (!workspace) {
+      try {
+        workspace = await determineWorkspaceFromPublic(question);
+      } catch (err) {
+        console.error('Error determining workspace (slash command):', err);
+        await axios.post(response_url, {
+          response_type: "ephemeral",
+          text: "⚠️ Couldn't determine the right workspace."
+        });
+        return;
+      }
+    }
+
+    const response = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
+      message: question,
+      mode: "chat",
+      sessionId: "slash-" + Date.now()
+    }, {
+      headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
+    });
+
+    const answer = response.data.textResponse || 'No response from DeepOrbit.';
+
+    await axios.post(response_url, {
+      response_type: "in_channel",
+      text: `*DeepOrbit* (${workspace}):\n${answer}`
+    });
+
+  } catch (err) {
+    console.error('Error in /askllm handler:', err.response?.data || err.message);
+    await axios.post(response_url, {
+      response_type: "ephemeral",
+      text: "❌ Something went wrong asking DeepOrbit."
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`DeepOrbit bot is running on port ${PORT}`);
+  console.log(`🚀 DeepOrbit bot is running on port ${PORT}`);
 });
