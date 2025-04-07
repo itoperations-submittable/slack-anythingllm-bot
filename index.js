@@ -1,8 +1,3 @@
-You are absolutely right to call that out. My apologies - I clearly missed replacing those specific comment blocks in the last output. That's my mistake for not ensuring every single placeholder was expanded.
-
-Let's try this one more time. Here is the complete `index.js` script with **all** sections, including the server startup and graceful shutdown logic, fully implemented.
-
-```javascript
 // index.js
 // FINAL Version: Fully implemented script with no placeholder comments.
 
@@ -627,4 +622,3 @@ async function shutdown(signal) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
-```
