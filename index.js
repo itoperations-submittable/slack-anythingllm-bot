@@ -1,4 +1,3 @@
-```javascript
 // index.js
 
 import express from 'express';
@@ -389,4 +388,3 @@ process.on('SIGINT', async () => {
     }
     process.exit(0);
 });
-```
