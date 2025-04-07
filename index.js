@@ -110,7 +110,13 @@ app.post('/slack/events', async (req, res) => {
 
     try {
       console.log("🔗 Sending to AnythingLLM:", { message: text, workspace, threadId: existingThreadId || null });
-    const llmRes = await axios.post(`${ANYTHINGLLM_API}/query`, {
+    const llmRes = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
+        message: text,
+        mode: "chat",
+        sessionId: thread_ts
+    }, {
+        headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
+    });
         message: text,
         workspace,
         threadId: existingThreadId || null
@@ -176,7 +182,13 @@ let question = text || '';
   }
 
   try {
-    const response = await axios.post(`${ANYTHINGLLM_API}/query`, {
+    const response = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
+        message: question,
+        mode: "chat",
+        sessionId: "slash-" + Date.now()
+    }, {
+        headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
+    });
       message: question,
       workspace
     }, {
