@@ -1,4 +1,3 @@
-```javascript
 // index.js
 
 import express from 'express';
@@ -459,5 +458,3 @@ async function shutdown(signal) {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
-
-```
