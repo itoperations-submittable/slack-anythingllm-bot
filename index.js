@@ -80,6 +80,10 @@ app.post('/slack/events', async (req, res) => {
   console.log("📥 Received Slack event:", JSON.stringify(req.body, null, 2));
   const { type, challenge, event } = req.body;
 
+  if (event) {
+    console.log("🛰️ Unhandled event received:", JSON.stringify(event, null, 2));
+  }
+
   if (type === 'url_verification') {
     console.log("✅ URL verification challenge received.");
     return res.send({ challenge });
