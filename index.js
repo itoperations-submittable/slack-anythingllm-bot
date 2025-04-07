@@ -1,6 +1,5 @@
 // index.js
-// FINAL Version: Full implementation with Sphere terminology, LLM Simplicity Check,
-// Reset Conversation, Increased Timeouts, Smaller Buttons, Interaction Endpoint Stub
+// FINAL Version: Fix for Body Parser Error, includes all features.
 
 import express from 'express';
 import { createEventAdapter } from '@slack/events-api';
@@ -102,7 +101,7 @@ async function isQuerySimpleLLM(query) {
 }
 
 
-// --- Sphere Decision Logic (Context-Aware - Formerly decideWorkspace/decideSector) ---
+// --- Sphere Decision Logic (Context-Aware) ---
 async function decideSphere(userQuestion, conversationHistory = "") {
     console.log(`[Sphere Decision] Starting for query: "${userQuestion}" with history.`);
     let availableWorkspaces = []; // API response field name is still 'workspaces'
@@ -133,6 +132,7 @@ async function decideSphere(userQuestion, conversationHistory = "") {
     }
 
     // 2. Format context-aware prompt for the public/routing LLM
+    // Updated prompt text to use "Sphere" but still ask for the "workspace slug"
     let selectionPrompt = "Consider the following conversation history (if any):\n";
     selectionPrompt += conversationHistory ? conversationHistory.trim() + "\n\n" : "[No History Provided]\n\n";
     selectionPrompt += `Based on the history (if any) and the latest user query: "${userQuestion}"\n\n`;
@@ -192,6 +192,7 @@ async function storeFeedback(feedbackData) {
    console.log("--- FEEDBACK RECEIVED ---");
    console.log(JSON.stringify(feedbackData, null, 2));
    console.log("-------------------------");
+   // Example: await database.collection('feedback').insertOne(feedbackData);
 }
 
 // --- Main Slack Event Handler ---
@@ -256,7 +257,7 @@ async function handleSlackMessageEvent(event) {
             // Use GET and DEL together to ensure atomicity if possible, otherwise check then delete
             const resetFlag = await redisClient.get(resetKey);
             if (resetFlag === 'true') {
-                console.log(`[Handler] Reset flag found for ${channel}. Skipping history fetch.`);
+                console.log(`[Handler] Reset flag found for ${channel}. Skipping history.`);
                 skipHistory = true;
                 await redisClient.del(resetKey); // Delete flag after reading it
                  console.log(`[Handler] Deleted reset flag ${resetKey}.`);
@@ -293,7 +294,6 @@ async function handleSlackMessageEvent(event) {
                          channel: channel,
                          ts: threadTs,
                          limit: HISTORY_LIMIT + 1, // Fetch a bit more, filter later
-                         // inclusive: false // Consider if you want the thread start message
                      });
                  } else { // DM or Mentioned in channel (not thread)
                      console.log(`[Handler] Fetching history: Channel=${channel}, Latest=${originalTs}, isDM=${isDM}`);
@@ -444,22 +444,33 @@ async function handleSlackMessageEvent(event) {
 
 
 // --- Express App Setup ---
-// Middleware for parsing application/x-www-form-urlencoded (needed for interactions)
-app.use(express.urlencoded({ extended: true }));
-// Events API listener (needs to be before any general JSON parser if added later)
+// Events API listener *MUST* come before any body parsers that consume the raw body
 app.use('/slack/events', slackEvents.requestListener());
+
+// Apply urlencoded middleware *only* for interaction payloads if needed elsewhere,
+// but it's added directly to the interaction endpoint below for clarity.
+// Avoid global `app.use(express.json());` before the event listener too.
 
 
 // --- Interaction Endpoint ---
-app.post('/slack/interactions', async (req, res) => {
+// Apply urlencoded middleware specifically to this route for Slack interactions
+app.post('/slack/interactions', express.urlencoded({ extended: true, limit: '1mb' }), async (req, res) => { // Added limit just in case
     // --- !!! CRITICAL: VERIFY SLACK SIGNATURE HERE !!! ---
-    // Skipping this is a security risk. Implement robust verification.
+    // Implementation requires comparing signature header with hash of raw body + timestamp
     console.warn("!!! Interaction signature verification is NOT IMPLEMENTED !!!"); // Placeholder
 
     let payload;
     try {
-        payload = JSON.parse(req.body.payload); // Interaction payload is nested
-    } catch (e) { console.error("Failed parse interaction payload:", e); return res.status(400).send(); }
+        // req.body is parsed by the urlencoded middleware we just added to this route
+        if (!req.body || !req.body.payload) {
+             console.error("Interaction payload missing or invalid req.body structure.");
+             return res.status(400).send();
+        }
+        payload = JSON.parse(req.body.payload);
+    } catch (e) {
+        console.error("Failed to parse interaction payload:", e);
+        return res.status(400).send(); // Bad Request
+    }
 
     // Acknowledge Slack immediately
     res.send();
@@ -486,7 +497,7 @@ app.post('/slack/interactions', async (req, res) => {
                 feedback_ts: new Date().toISOString(), feedback_value: feedbackValue,
                 user_id: userId, channel_id: channelId, bot_message_ts: messageTs,
                 original_user_message_ts: originalQuestionTs, action_id: actionId,
-                // bot_message_text: payload.message?.blocks?.[0]?.text?.text // Optional: Store text
+                bot_message_text: payload.message?.blocks?.[0]?.text?.text // Optional: Store replied text
             });
 
             // Optional: Update the original message to show feedback was received
@@ -502,9 +513,15 @@ app.post('/slack/interactions', async (req, res) => {
                  console.log(`[Interaction] Updated original message ${messageTs} to acknowledge feedback.`);
             } catch (updateError) { console.warn("Failed update message after feedback:", updateError.data?.error || updateError.message); }
 
-        } else if (payload.type === 'view_submission') { console.log("[Interaction] Received view submission"); }
-        else { console.log("[Interaction] Received unhandled interaction type:", payload.type); }
-    } catch (error) { console.error("[Interaction Handling Error]", error); }
+        } else if (payload.type === 'view_submission') {
+             console.log("[Interaction] Received view submission");
+             // Add logic to handle modal submissions here if needed
+        } else {
+            console.log("[Interaction] Received unhandled interaction type:", payload.type);
+        }
+    } catch (error) {
+        console.error("[Interaction Handling Error]", error);
+    }
 });
 
 
