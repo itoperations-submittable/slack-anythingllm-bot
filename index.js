@@ -191,6 +191,10 @@ app.post('/slack/events', async (req, res) => {
 
 app.post('/slack/askllm', async (req, res) => {
   const { text, user_id, channel_id, response_url } = req.body;
+
+  console.log("🚦 Slash command invoked");
+  console.log("📨 Payload:", JSON.stringify(req.body, null, 2));
+
   res.status(200).send("⏳ DeepOrbit is thinking...");
 
   try {
@@ -199,11 +203,16 @@ app.post('/slack/askllm', async (req, res) => {
     let workspace = workspaceMatch ? workspaceMatch[1] : null;
     question = question.replace(/#\{[^}]+\}/, '').trim();
 
+    console.log("🔍 Parsed question:", question);
+    console.log("🗂️ Initial workspace:", workspace);
+
     if (!workspace) {
+      console.log("🧠 Calling determineWorkspaceFromPublic...");
       try {
         workspace = await determineWorkspaceFromPublic(question);
+        console.log("✅ Resolved workspace:", workspace);
       } catch (err) {
-        console.error('Error determining workspace (slash command):', err);
+        console.error('❌ Workspace detection error:', err);
         await axios.post(response_url, {
           response_type: "ephemeral",
           text: "⚠️ Couldn't determine the right workspace."
@@ -211,6 +220,8 @@ app.post('/slack/askllm', async (req, res) => {
         return;
       }
     }
+
+    console.log("📡 Sending to AnythingLLM:", workspace, question);
 
     const response = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
       message: question,
@@ -221,14 +232,17 @@ app.post('/slack/askllm', async (req, res) => {
     });
 
     const answer = response.data.textResponse || 'No response from DeepOrbit.';
+    console.log("📬 LLM Response:", answer);
 
     await axios.post(response_url, {
       response_type: "in_channel",
       text: `*DeepOrbit* (${workspace}):\n${answer}`
     });
 
+    console.log("✅ Response sent via response_url");
+
   } catch (err) {
-    console.error('Error in /askllm handler:', err.response?.data || err.message);
+    console.error('🔥 Caught error in /askllm:', err.response?.data || err.message);
     await axios.post(response_url, {
       response_type: "ephemeral",
       text: "❌ Something went wrong asking DeepOrbit."
