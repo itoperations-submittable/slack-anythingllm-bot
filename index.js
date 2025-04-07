@@ -228,7 +228,9 @@ app.post('/slack/events', async (req, res) => {
 
   const loadingTs = await postThinking(channel, thread_ts, isDM);
   const reply = await handleLLM(question, workspace, key);
-  await updateMessage(channel, loadingTs, reply);
+  await updateMessage(channel, loadingTs, `🛰 *Workspace: ${workspace}*
+
+${reply}`);
 });
 
 app.post('/slack/askllm', async (req, res) => {
@@ -261,9 +263,17 @@ app.post('/slack/askllm', async (req, res) => {
   if (!workspace) workspace = await determineWorkspace(question);
   await redis.set(`workspace:${key}`, workspace);
 
-  await axios.post(response_url, { text: ':hourglass_flowing_sand: DeepOrbit is thinking...' });
+  if (response_url && typeof response_url === 'string' && response_url.startsWith('http')) {
+    console.log('📡 Posting thinking message to response_url');
+    await axios.post(response_url, { text: ':hourglass_flowing_sand: DeepOrbit is thinking...' });
+}
   const reply = await handleLLM(question, workspace, key);
-  await axios.post(response_url, { text: reply });
+  if (response_url && typeof response_url === 'string' && response_url.startsWith('http')) {
+    console.log('📬 Posting LLM reply to response_url');
+    await axios.post(response_url, { text: `🛰 *Workspace: ${workspace}*
+
+${reply}` });
+}
   res.status(200).end();
 });
 
