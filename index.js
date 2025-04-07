@@ -170,7 +170,22 @@ You can say: \`use docs\`, \`switch to gravityflow\`, or just ask a question!`;
 app.post('/slack/events', async (req, res) => {
   res.status(200).end();
   const { type, event, event_id } = req.body;
-  if (!event || event.bot_id || !event.text?.trim()) return;
+  const DEVELOPER_ID = process.env.DEVELOPER_ID;
+  if (!event || !event.text?.trim()) return;
+  if (event.bot_id) return;
+
+  // Restrict replies to only the developer
+  if (event.user !== DEVELOPER_ID) {
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel: event.channel,
+      text: `🚫 I'm currently under development! But here's a joke instead:
+
+> Why did the dev go broke? Because he used up all his cache 💸`
+    }, {
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+    });
+    return;
+  }
 
   const alreadyHandled = await redis.get(`event:${event_id}`);
   if (alreadyHandled) return;
