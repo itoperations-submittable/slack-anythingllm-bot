@@ -7,6 +7,7 @@ const { createClient } = require('redis');
 
 const app = express();
 
+// Middleware: Verify Slack Signature
 function verifySlackRequest(req, res, buf) {
   const timestamp = req.headers['x-slack-request-timestamp'];
   const slackSig = req.headers['x-slack-signature'];
@@ -20,19 +21,24 @@ function verifySlackRequest(req, res, buf) {
   }
 }
 
+// JSON for event subscriptions
 app.use(bodyParser.json({ verify: verifySlackRequest }));
+
+// FORM payloads for slash commands
+app.use('/slack/askllm', bodyParser.urlencoded({ extended: true }));
+
+// Redis client
+const redisClient = createClient({ url: process.env.REDIS_URL });
+redisClient.on('error', err => console.error('Redis Client Error', err));
+(async () => await redisClient.connect())();
 
 const {
   SLACK_BOT_TOKEN,
   ANYTHINGLLM_API,
-  ANYTHINGLLM_API_KEY,
-  REDIS_URL
+  ANYTHINGLLM_API_KEY
 } = process.env;
 
-const redisClient = createClient({ url: REDIS_URL });
-redisClient.on('error', err => console.error('Redis Client Error', err));
-(async () => await redisClient.connect())();
-
+// Detect workspace using public LLM
 async function determineWorkspaceFromPublic(message) {
   const prompt = `I have a user question: "${message.trim()}". Based on the available workspaces: GF Stripe, GF PayPal Checkout, gravityforms core, gravityflow, docs, internal docs, github, data provider — which workspace is the best match for this question? Just return the exact name of the best matching workspace.`;
 
@@ -53,6 +59,7 @@ async function determineWorkspaceFromPublic(message) {
   return result;
 }
 
+// Send onboarding message in thread
 async function sendIntroMessage(channel, thread_ts) {
   const introKey = `intro:${thread_ts}`;
   const alreadySeen = await redisClient.get(introKey);
@@ -71,22 +78,18 @@ async function sendIntroMessage(channel, thread_ts) {
   }
 }
 
+// Events (app mentions, app home)
 app.post('/slack/events', async (req, res) => {
-  console.log("📥 Received Slack event:", JSON.stringify(req.body, null, 2));
   const { type, challenge, event } = req.body;
 
-  if (event) {
-    console.log("🛰️ Unhandled event received:", JSON.stringify(event, null, 2));
-  }
+  console.log("📥 Slack event:", JSON.stringify(event, null, 2));
 
   if (type === 'url_verification') {
-    console.log("✅ URL verification challenge received.");
     return res.send({ challenge });
   }
 
   if (event && event.type === 'app_home_opened') {
     console.log("🏠 App Home opened by user:", event.user);
-
     try {
       await axios.post('https://slack.com/api/views.publish', {
         user_id: event.user,
@@ -95,50 +98,33 @@ app.post('/slack/events', async (req, res) => {
           blocks: [
             {
               type: "header",
-              text: {
-                type: "plain_text",
-                text: "🚀 Welcome to DeepOrbit",
-                emoji: true
-              }
+              text: { type: "plain_text", text: "🚀 Welcome to DeepOrbit", emoji: true }
             },
             {
               type: "section",
               text: {
                 type: "mrkdwn",
-                text: "I'm here to help you navigate the knowledge space.\n\n• Tag me with `@DeepOrbit`\n• Use `/askllm`\n• Add `#{workspace}` to guide me"
+                text: "I'm here to help you navigate the knowledge space.\n• Tag me with `@DeepOrbit`\n• Use `/askllm`\n• Add `#{workspace}` to guide me"
               }
             },
-            {
-              type: "divider"
-            },
+            { type: "divider" },
             {
               type: "context",
-              elements: [
-                {
-                  type: "mrkdwn",
-                  text: "_Built with AnythingLLM. Powered by your data._"
-                }
-              ]
+              elements: [{ type: "mrkdwn", text: "_Built with AnythingLLM. Powered by your data._" }]
             }
           ]
         }
       }, {
-        headers: {
-          Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
+        headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
       });
-
-      console.log("✅ App Home view published.");
     } catch (err) {
-      console.error("❌ Failed to publish App Home view:", err.response?.data || err.message);
+      console.error("❌ App Home failed:", err.response?.data || err.message);
     }
-
     return res.status(200).end();
   }
 
   if (event && event.type === 'app_mention') {
-    console.log("📌 app_mention received:", event);
+    console.log("📌 app_mention:", event);
 
     let text = event.text;
     const channel = event.channel;
@@ -153,8 +139,8 @@ app.post('/slack/events', async (req, res) => {
       try {
         workspace = await determineWorkspaceFromPublic(text);
       } catch (err) {
-        console.error('Error determining workspace:', err);
-        return res.status(500).send('Failed to determine workspace');
+        console.error('Workspace detection failed:', err);
+        return res.status(500).send('Workspace not found');
       }
     }
 
@@ -175,24 +161,22 @@ app.post('/slack/events', async (req, res) => {
         text: reply,
         thread_ts
       }, {
-        headers: {
-          Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
+        headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
       });
 
     } catch (err) {
-      console.error('Error handling LLM query:', err.response?.data || err.message);
+      console.error('Error handling app_mention:', err.response?.data || err.message);
     }
   }
 
   res.status(200).end();
 });
 
+// Slash command: /askllm
 app.post('/slack/askllm', async (req, res) => {
   const { text, user_id, channel_id, response_url } = req.body;
 
-  console.log("🚦 Slash command invoked");
+  console.log("🚦 /askllm received");
   console.log("📨 Payload:", JSON.stringify(req.body, null, 2));
 
   res.status(200).send("⏳ DeepOrbit is thinking...");
@@ -204,24 +188,12 @@ app.post('/slack/askllm', async (req, res) => {
     question = question.replace(/#\{[^}]+\}/, '').trim();
 
     console.log("🔍 Parsed question:", question);
-    console.log("🗂️ Initial workspace:", workspace);
+    console.log("🗂️ Workspace:", workspace);
 
     if (!workspace) {
-      console.log("🧠 Calling determineWorkspaceFromPublic...");
-      try {
-        workspace = await determineWorkspaceFromPublic(question);
-        console.log("✅ Resolved workspace:", workspace);
-      } catch (err) {
-        console.error('❌ Workspace detection error:', err);
-        await axios.post(response_url, {
-          response_type: "ephemeral",
-          text: "⚠️ Couldn't determine the right workspace."
-        });
-        return;
-      }
+      workspace = await determineWorkspaceFromPublic(question);
+      console.log("🧠 Determined workspace:", workspace);
     }
-
-    console.log("📡 Sending to AnythingLLM:", workspace, question);
 
     const response = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
       message: question,
@@ -232,17 +204,16 @@ app.post('/slack/askllm', async (req, res) => {
     });
 
     const answer = response.data.textResponse || 'No response from DeepOrbit.';
-    console.log("📬 LLM Response:", answer);
 
     await axios.post(response_url, {
       response_type: "in_channel",
       text: `*DeepOrbit* (${workspace}):\n${answer}`
     });
 
-    console.log("✅ Response sent via response_url");
+    console.log("✅ Response sent to response_url");
 
   } catch (err) {
-    console.error('🔥 Caught error in /askllm:', err.response?.data || err.message);
+    console.error('🔥 Error in /askllm:', err.response?.data || err.message);
     await axios.post(response_url, {
       response_type: "ephemeral",
       text: "❌ Something went wrong asking DeepOrbit."
