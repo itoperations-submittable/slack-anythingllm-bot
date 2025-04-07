@@ -1,23 +1,42 @@
-// Enhanced DeepOrbit Slack bot with deduplication, smart workspace resolution, memory, better UX, and DM support
+// Enhanced DeepOrbit Slack bot using Upstash REST Redis API, smart workspace resolution, deduplication, and UX improvements
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
-const { createClient } = require('redis');
 
 const app = express();
 
+// Slack signature validation middleware
 function verifySlackRequest(req, res, buf) {
   const timestamp = req.headers['x-slack-request-timestamp'];
   const slackSig = req.headers['x-slack-signature'];
-  const baseString = `v0:${timestamp}:${buf}`;
-  const mySig = 'v0=' + crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET).update(baseString).digest('hex');
 
-  const isValid = crypto.timingSafeEqual(Buffer.from(mySig), Buffer.from(slackSig));
+  if (!timestamp || !slackSig) {
+    console.error('⚠️ Missing Slack signature headers');
+    res.status(400).send('Bad Request: Missing headers');
+    return;
+  }
+
+  const baseString = `v0:${timestamp}:${buf}`;
+  const mySig = 'v0=' + crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET)
+    .update(baseString)
+    .digest('hex');
+
+  const sigA = Buffer.from(mySig);
+  const sigB = Buffer.from(slackSig);
+
+  if (sigA.length !== sigB.length) {
+    console.error('❌ Signature length mismatch');
+    res.status(400).send('Bad Request: Signature mismatch');
+    return;
+  }
+
+  const isValid = crypto.timingSafeEqual(sigA, sigB);
   if (!isValid) {
+    console.error('❌ Invalid Slack signature');
     res.status(400).send('Invalid signature');
-    throw new Error('Invalid Slack signature');
+    return;
   }
 }
 
@@ -28,26 +47,37 @@ const {
   SLACK_BOT_TOKEN,
   ANYTHINGLLM_API,
   ANYTHINGLLM_API_KEY,
-  REDIS_URL,
-  DEV_MODE
+  UPSTASH_REDIS_REST_URL,
+  UPSTASH_REDIS_REST_TOKEN
 } = process.env;
 
-let redisClient;
+// Redis client using Upstash REST API
+const redis = {
+  async get(key) {
+    const res = await axios.get(`${UPSTASH_REDIS_REST_URL}/get/${key}`, {
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`
+      }
+    });
+    return res.data.result;
+  },
+  async set(key, value) {
+    await axios.get(`${UPSTASH_REDIS_REST_URL}/set/${key}/${value}`, {
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`
+      }
+    });
+  },
+  async del(key) {
+    await axios.get(`${UPSTASH_REDIS_REST_URL}/del/${key}`, {
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`
+      }
+    });
+  }
+};
 
-if (DEV_MODE === 'true') {
-  console.log("🧪 DEV_MODE active: Redis is mocked.");
-  redisClient = {
-    get: async () => null,
-    set: async () => {},
-    del: async () => {},
-    on: () => {}
-  };
-} else {
-  redisClient = createClient({ url: REDIS_URL });
-  redisClient.on('error', err => console.error('Redis error:', err));
-  (async () => await redisClient.connect())();
-}
-
+// Aliases to resolve workspace names to slugs
 const workspaceAliases = {
   'stripe': 'gf-stripe', 'gf stripe': 'gf-stripe',
   'paypal': 'gf-paypal-checkout', 'paypal checkout': 'gf-paypal-checkout', 'checkout': 'gf-paypal-checkout',
@@ -81,7 +111,6 @@ async function determineWorkspace(message) {
   }, {
     headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
   });
-
   const result = res.data.textResponse?.trim() || 'unknown';
   console.log(`[Decision] LLM chose: "${result}" for message: "${message}"`);
   return resolveWorkspaceSlug(result);
@@ -110,18 +139,6 @@ async function updateMessage(channel, ts, text) {
   });
 }
 
-async function fetchStoredWorkspace(key) {
-  return await redisClient.get(`workspace:${key}`);
-}
-
-async function storeWorkspace(key, workspace) {
-  return await redisClient.set(`workspace:${key}`, workspace);
-}
-
-async function resetWorkspace(key) {
-  return await redisClient.del(`workspace:${key}`);
-}
-
 function extractSwitchIntent(text) {
   const match = text.match(/(?:switch|use|change to)\s+([a-zA-Z\s]+)/i);
   return match ? resolveWorkspaceSlug(match[1]) : null;
@@ -129,9 +146,7 @@ function extractSwitchIntent(text) {
 
 async function handleLLM(message, workspace, sessionId) {
   const normalized = message.trim().toLowerCase();
-  const vague = [
-    'hi', 'hello', 'hey', 'help', 'can you help', 'i need help', 'what can you do', 'who are you'
-  ];
+  const vague = ['hi', 'hello', 'hey', 'help', 'can you help', 'i need help', 'what can you do', 'who are you'];
   if (!message || vague.some(q => normalized.includes(q))) {
     return `👋 Hello! I'm *DeepOrbit*. I can help you with:
 
@@ -142,7 +157,6 @@ async function handleLLM(message, workspace, sessionId) {
 
 You can say: \`use docs\`, \`switch to gravityflow\`, or just ask a question!`;
   }
-
   const res = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
     message,
     mode: 'chat',
@@ -154,24 +168,22 @@ You can say: \`use docs\`, \`switch to gravityflow\`, or just ask a question!`;
 }
 
 app.post('/slack/events', async (req, res) => {
-  res.status(200).end(); // respond immediately
-
+  res.status(200).end();
   const { type, event, event_id } = req.body;
-  if (!event || event.bot_id) return;
-  if (!event.text || event.text.trim().length < 1) return;
+  if (!event || event.bot_id || !event.text?.trim()) return;
 
-  const alreadyHandled = await redisClient.get(`event:${event_id}`);
+  const alreadyHandled = await redis.get(`event:${event_id}`);
   if (alreadyHandled) return;
-  await redisClient.set(`event:${event_id}`, '1', { EX: 60 });
+  await redis.set(`event:${event_id}`, '1');
 
-  const text = event.text || '';
+  const text = event.text;
   const channel = event.channel;
   const thread_ts = event.thread_ts || event.ts;
   const isDM = event.channel_type === 'im';
   const key = isDM ? event.user : thread_ts;
 
-  if (text.trim().toLowerCase() === 'reset') {
-    await resetWorkspace(key);
+  if (text.toLowerCase() === 'reset') {
+    await redis.del(`workspace:${key}`);
     await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
       text: '🧹 Workspace context has been reset. You can start fresh!'
@@ -181,7 +193,7 @@ app.post('/slack/events', async (req, res) => {
     return;
   }
 
-  if (text.trim().toLowerCase() === 'topics') {
+  if (text.toLowerCase() === 'topics') {
     const helpText = `👋 I'm *DeepOrbit*. I can help you with:
 
 • 💳 *Stripe* or *PayPal* add-ons
@@ -199,7 +211,7 @@ app.post('/slack/events', async (req, res) => {
 
   let workspace = extractSwitchIntent(text);
   if (workspace) {
-    await storeWorkspace(key, workspace);
+    await redis.set(`workspace:${key}`, workspace);
     await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
       text: `🛰 Workspace switched to *${workspace}*.`
@@ -209,11 +221,10 @@ app.post('/slack/events', async (req, res) => {
     return;
   }
 
-  workspace = await fetchStoredWorkspace(key);
+  workspace = await redis.get(`workspace:${key}`);
   const question = text.replace(/#\{[^}]+\}/, '').trim();
-
   if (!workspace) workspace = await determineWorkspace(question);
-  await storeWorkspace(key, workspace);
+  await redis.set(`workspace:${key}`, workspace);
 
   const loadingTs = await postThinking(channel, thread_ts, isDM);
   const reply = await handleLLM(question, workspace, key);
@@ -223,10 +234,10 @@ app.post('/slack/events', async (req, res) => {
 app.post('/slack/askllm', async (req, res) => {
   const { text, user_id, response_url } = req.body;
   const key = user_id;
-  if (!text || text.trim().length < 1) return res.status(200).end();
+  if (!text?.trim()) return res.status(200).end();
 
   if (text.trim().toLowerCase() === 'reset') {
-    await resetWorkspace(key);
+    await redis.del(`workspace:${key}`);
     await axios.post(response_url, { text: '🧹 Workspace context has been reset. You can start fresh!' });
     return res.status(200).end();
   }
@@ -242,18 +253,17 @@ app.post('/slack/askllm', async (req, res) => {
     return res.status(200).end();
   }
 
-  const workspaceIntent = extractSwitchIntent(text);
-  if (workspaceIntent) await storeWorkspace(key, workspaceIntent);
+  const intent = extractSwitchIntent(text);
+  if (intent) await redis.set(`workspace:${key}`, intent);
 
-  let workspace = await fetchStoredWorkspace(key);
+  let workspace = await redis.get(`workspace:${key}`);
   const question = text.replace(/#\{[^}]+\}/, '').trim();
   if (!workspace) workspace = await determineWorkspace(question);
-  await storeWorkspace(key, workspace);
+  await redis.set(`workspace:${key}`, workspace);
 
   await axios.post(response_url, { text: ':hourglass_flowing_sand: DeepOrbit is thinking...' });
   const reply = await handleLLM(question, workspace, key);
   await axios.post(response_url, { text: reply });
-
   res.status(200).end();
 });
 
