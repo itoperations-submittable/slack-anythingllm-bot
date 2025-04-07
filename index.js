@@ -119,8 +119,7 @@ app.post('/slack/events', async (req, res) => {
     });
         message: text,
         workspace,
-        threadId: existingThreadId || null
-      }, {
+              }, {
         headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
       });
 
