@@ -5,7 +5,6 @@ const bodyParser = require('body-parser');
 const { createClient } = require('redis');
 
 const app = express();
-app.use(bodyParser.json()); // 🔧 Signature check disabled for testing
 
 const {
   SLACK_BOT_TOKEN,
