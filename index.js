@@ -1,190 +1,161 @@
-// DeepOrbit Slack bot with LLM-based workspace detection and Render-compatible logging
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-const bodyParser = require('body-parser');
-const crypto = require('crypto');
-const { createClient } = require('redis');
+// index.js
+
+import express from 'express';
+import { createEventAdapter } from '@slack/events-api';
+import axios from 'axios';
+import dotenv from 'dotenv';
+import { createClient } from 'redis';
+import { WebClient } from '@slack/web-api';
+import bodyParser from 'body-parser';
+import crypto from 'crypto';
+
+// Load environment variables
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
+const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
+const slackToken = process.env.SLACK_BOT_TOKEN;
+const anythingLLMBaseUrl = process.env.LLM_API_BASE_URL;
+const anythingLLMApiKey = process.env.LLM_API_KEY;
+const developerId = process.env.DEVELOPER_ID;
 
-// Slack request verification
-function verifySlackRequest(req, res, buf) {
-  const timestamp = req.headers['x-slack-request-timestamp'];
-  const slackSig = req.headers['x-slack-signature'];
-  const baseString = `v0:${timestamp}:${buf}`;
-  const mySig = 'v0=' + crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET).update(baseString).digest('hex');
+const redisUrl = process.env.REDIS_URL;
+const redisClient = createClient({
+  url: redisUrl,
+  socket: {
+    reconnectStrategy: retries => Math.min(retries * 100, 3000),
+  },
+});
 
-  if (!slackSig || !crypto.timingSafeEqual(Buffer.from(mySig), Buffer.from(slackSig))) {
-    res.status(400).send('Invalid signature');
-    throw new Error('Invalid Slack signature');
+// Log Redis connection status
+redisClient.on('error', err => console.error('Redis error:', err));
+redisClient.on('connect', () => console.log('Redis connecting...'));
+redisClient.on('ready', () => console.log('Redis connected!'));
+redisClient.connect();
+
+const slackEvents = createEventAdapter(slackSigningSecret);
+const slack = new WebClient(slackToken);
+
+const recentEvents = new Set();
+
+function isDuplicate(eventId) {
+  if (recentEvents.has(eventId)) return true;
+  recentEvents.add(eventId);
+  setTimeout(() => recentEvents.delete(eventId), 60 * 1000);
+  return false;
+}
+
+// Slack events endpoint
+app.post('/slack/events', bodyParser.json(), async (req, res) => {
+  const body = req.body;
+
+  if (!body.event || !body.event.type || !body.event_id) {
+    return res.status(400).send('Invalid request');
+  }
+
+  if (isDuplicate(body.event_id)) {
+    console.log(`[Duplicate] Skipping event: ${body.event_id}`);
+    return res.status(200).send();
+  }
+
+  res.status(200).send(); // Acknowledge Slack immediately
+
+  try {
+    await handleSlackEvent(body);
+  } catch (err) {
+    console.error('[Slack Event Error]', err);
+  }
+});
+
+// Main event handler
+async function handleSlackEvent(body) {
+  const { event } = body;
+
+  if (event.type === 'message' && event.subtype !== 'bot_message') {
+    const userId = event.user;
+    const text = event.text;
+    const threadTs = event.thread_ts || event.ts;
+    const channel = event.channel;
+
+    await slack.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: ':hourglass_flowing_sand: DeepOrbit is thinking...'
+    });
+
+    // Send message to LLM for workspace decision
+    const workspace = await decideWorkspace(text);
+
+    // Handle unauthorized users
+    if (developerId && userId !== developerId) {
+      await slack.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: `🛑 Sorry, DeepOrbit only responds to the developer for now.`
+      });
+      return;
+    }
+
+    try {
+      const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${workspace}/chat`, {
+        message: text,
+        mode: 'chat',
+        sessionId: userId,
+      }, {
+        headers: {
+          Authorization: `Bearer ${anythingLLMApiKey}`,
+        }
+      });
+
+      const reply = response.data.textResponse || '⚠️ Something went wrong';
+      await slack.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: reply
+      });
+    } catch (error) {
+      console.error('[LLM Error]', error);
+      await slack.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: '⚠️ DeepOrbit ran into an error. Please try again later.'
+      });
+    }
   }
 }
 
-app.use(bodyParser.json({ verify: verifySlackRequest }));
-app.use('/slack/askllm', bodyParser.urlencoded({ extended: true }));
-
-const {
-  SLACK_BOT_TOKEN,
-  ANYTHINGLLM_API,
-  ANYTHINGLLM_API_KEY,
-  REDIS_URL,
-  DEV_MODE,
-  DEVELOPER_ID
-} = process.env;
-
-// Redis setup
-let redisClient;
-if (DEV_MODE === 'true') {
-  console.log("🧪 DEV_MODE active: Redis is mocked.");
-  redisClient = {
-    get: async () => null,
-    set: async () => {},
-    del: async () => {},
-    on: () => {}
-  };
-} else {
-  redisClient = createClient({ url: REDIS_URL });
-  redisClient.on('error', err => console.error('Redis error:', err));
-  redisClient.connect().then(() => console.log('✅ Redis connected!')).catch(console.error);
-}
-
-function extractSwitchIntent(text) {
-  const match = text.match(/(?:switch|use|change to)\s+([a-zA-Z\s]+)/i);
-  return match ? match[1].toLowerCase().trim() : null;
-}
-
-async function determineWorkspace(message) {
-  const prompt = `User asked: "${message}". Which workspace from: GF Stripe, GF PayPal Checkout, Gravity Forms Core, GravityFlow, Docs, Internal Docs best matches? Return only the name.`;
+// Determine workspace using LLM
+async function decideWorkspace(prompt) {
   try {
-    const res = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/public/chat`, {
-      message: prompt,
-      mode: 'chat',
-      sessionId: `routing-${Date.now()}`
+    const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace-detection`, {
+      message: prompt
     }, {
-      headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
+      headers: {
+        Authorization: `Bearer ${anythingLLMApiKey}`,
+      }
     });
 
-    const result = res.data.textResponse?.trim() || 'public';
-    console.log(`[Decision] LLM chose: "${result}" for message: "${message}"`);
-    return result.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  } catch (err) {
-    console.error("[LLM workspace detection error]", err);
+    const workspace = response.data?.workspace || 'public';
+    console.log(`[Decision] LLM chose workspace: "${workspace}" for message: "${prompt}"`);
+
+    // Validate workspace format
+    if (!workspace.match(/^[a-z0-9\-]+$/i)) {
+      console.warn(`[Invalid Workspace] Falling back to public`);
+      return 'public';
+    }
+
+    return workspace;
+  } catch (error) {
+    console.error('[Workspace Decision Error]', error);
     return 'public';
   }
 }
 
-async function postThinking(channel, thread_ts) {
-  const res = await axios.post('https://slack.com/api/chat.postMessage', {
-    channel,
-    thread_ts,
-    text: ':hourglass_flowing_sand: DeepOrbit is thinking...'
-  }, {
-    headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-  });
-  return res.data.ts;
-}
-
-async function updateMessage(channel, ts, text) {
-  await axios.post('https://slack.com/api/chat.update', {
-    channel,
-    ts,
-    text
-  }, {
-    headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-  });
-}
-
-async function fetchStoredWorkspace(key) {
-  return await redisClient.get(`workspace:${key}`);
-}
-
-async function storeWorkspace(key, workspace) {
-  return await redisClient.set(`workspace:${key}`, workspace);
-}
-
-async function handleLLM(message, workspace, sessionId) {
-  try {
-    const res = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
-      message,
-      mode: 'chat',
-      sessionId
-    }, {
-      headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
-    });
-    return res.data.textResponse || 'No response.';
-  } catch (err) {
-    console.error(`[handleLLM] Error in workspace "${workspace}":`, err);
-    return `Something went wrong while querying workspace *${workspace}*. Please try again later.`;
-  }
-}
-
-app.post('/slack/events', async (req, res) => {
-  const { type, event } = req.body;
-  console.log('[Slack Event]', JSON.stringify(req.body));
-
-  if (type === 'url_verification') return res.send({ challenge: req.body.challenge });
-  if (!event || event.bot_id) return res.status(200).end();
-
-  const { text = '', channel, thread_ts, user, channel_type } = event;
-  const key = channel_type === 'im' ? user : thread_ts;
-
-  // Restrict bot access during development
-  if (DEVELOPER_ID && user !== DEVELOPER_ID) {
-    await axios.post('https://slack.com/api/chat.postMessage', {
-      channel,
-      thread_ts: thread_ts || event.ts,
-      text: `🤖 Sorry, I'm still learning. Try again later!`
-    }, {
-      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-    });
-    return res.status(200).end();
-  }
-
-  let workspace = extractSwitchIntent(text);
-  if (workspace) {
-    workspace = workspace.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    await storeWorkspace(key, workspace);
-    await axios.post('https://slack.com/api/chat.postMessage', {
-      channel,
-      thread_ts: thread_ts || event.ts,
-      text: `🛰 Workspace switched to *${workspace}*.`
-    }, {
-      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-    });
-    return res.status(200).end();
-  }
-
-  const question = text.trim();
-  workspace = await determineWorkspace(question);
-  await storeWorkspace(key, workspace);
-
-  const loadingTs = await postThinking(channel, thread_ts || event.ts);
-  const reply = await handleLLM(question, workspace, key);
-  await updateMessage(channel, loadingTs, `*(Workspace: ${workspace})*\n\n${reply}`);
-
-  res.status(200).end();
+app.get('/', (req, res) => {
+  res.send('DeepOrbit is live 🎯');
 });
 
-app.post('/slack/askllm', async (req, res) => {
-  const { text, user_id, channel_id, response_url } = req.body;
-  const key = user_id;
-
-  const switchIntent = extractSwitchIntent(text);
-  if (switchIntent) await storeWorkspace(key, switchIntent);
-
-  const question = text.trim();
-  const workspace = await determineWorkspace(question);
-  await storeWorkspace(key, workspace);
-
-  await axios.post(response_url, { text: ':hourglass_flowing_sand: DeepOrbit is thinking...' });
-  const reply = await handleLLM(question, workspace, key);
-  await axios.post(response_url, { text: `*(Workspace: ${workspace})*\n\n${reply}` });
-
-  res.status(200).end();
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 DeepOrbit is live on port ${PORT}`);
+app.listen(port, () => {
+  console.log(`🚀 DeepOrbit running on port ${port}`);
 });
