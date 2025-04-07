@@ -2,15 +2,13 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
-const crypto = require('crypto');
 const { createClient } = require('redis');
 
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json()); // 🔧 Signature check disabled for testing
 
 const {
   SLACK_BOT_TOKEN,
-  SLACK_SIGNING_SECRET,
   ANYTHINGLLM_API,
   ANYTHINGLLM_API_KEY,
   REDIS_URL
@@ -19,20 +17,6 @@ const {
 const redisClient = createClient({ url: REDIS_URL });
 redisClient.on('error', err => console.error('Redis Client Error', err));
 (async () => await redisClient.connect())();
-
-function verifySlackRequest(req, res, buf) {
-  const timestamp = req.headers['x-slack-request-timestamp'];
-  const slackSig = req.headers['x-slack-signature'];
-  const baseString = `v0:${timestamp}:${buf}`;
-  const mySig = 'v0=' + crypto.createHmac('sha256', SLACK_SIGNING_SECRET).update(baseString).digest('hex');
-
-  const isValid = crypto.timingSafeEqual(Buffer.from(mySig), Buffer.from(slackSig));
-  if (!isValid) {
-    res.status(400).send('Invalid signature');
-    throw new Error('Invalid Slack signature');
-  }
-}
-app.use(bodyParser.json({ verify: verifySlackRequest }));
 
 async function determineWorkspaceFromPublic(message) {
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
@@ -87,6 +71,59 @@ app.post('/slack/events', async (req, res) => {
   if (type === 'url_verification') {
     console.log("✅ URL verification challenge received.");
     return res.send({ challenge });
+  }
+
+  if (event && event.type === 'app_home_opened') {
+    console.log("🏠 App Home opened by user:", event.user);
+
+    try {
+      await axios.post('https://slack.com/api/views.publish', {
+        user_id: event.user,
+        view: {
+          type: "home",
+          blocks: [
+            {
+              type: "header",
+              text: {
+                type: "plain_text",
+                text: "🚀 Welcome to DeepOrbit",
+                emoji: true
+              }
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "I'm here to help you navigate the knowledge space.\n\n• Tag me with `@DeepOrbit`\n• Use `/askllm`\n• Add `#{workspace}` to guide me"
+              }
+            },
+            {
+              type: "divider"
+            },
+            {
+              type: "context",
+              elements: [
+                {
+                  type: "mrkdwn",
+                  text: "_Built with LLMs. Powered by your data._"
+                }
+              ]
+            }
+          ]
+        }
+      }, {
+        headers: {
+          Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      console.log("✅ App Home view published.");
+    } catch (err) {
+      console.error("❌ Failed to publish App Home view:", err.response?.data || err.message);
+    }
+
+    return res.status(200).end();
   }
 
   if (event && event.type === 'app_mention') {
@@ -150,52 +187,7 @@ app.post('/slack/events', async (req, res) => {
     }
   }
 
-  console.log("👀 Request made it to the bottom of the handler.");
   res.status(200).end();
-});
-
-app.post('/slack/askllm', async (req, res) => {
-  const { text, user_id, channel_id, response_url } = req.body;
-
-  if (!text || text.trim().length === 0) {
-    return res.status(200).send("⚠️ You need to include a question. Try `/askllm how do I reset a password?`");
-  }
-
-  let question = text || '';
-  const workspaceMatch = question.match(/#\{([^}]+)\}/);
-  let workspace = workspaceMatch ? workspaceMatch[1] : null;
-  question = question.replace(/#\{[^}]+\}/, '').trim();
-
-  if (!workspace) {
-    try {
-      workspace = await determineWorkspaceFromPublic(question);
-    } catch (err) {
-      console.error('Error determining workspace (slash command):', err);
-      return res.status(200).send("⚠️ Couldn't determine the right workspace.");
-    }
-  }
-
-  try {
-    const response = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/${workspace}/chat`, {
-      message: question,
-      mode: "chat",
-      sessionId: "slash-" + Date.now()
-    }, {
-      headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
-    });
-
-    const answer = response.data.textResponse || 'No response from DeepOrbit.';
-
-    await axios.post(response_url, {
-      response_type: "in_channel",
-      text: `*DeepOrbit* (${workspace}):\n${answer}`
-    });
-
-    res.status(200).end();
-  } catch (err) {
-    console.error('Error in /askllm handler:', err.response?.data || err.message);
-    res.status(200).send("❌ Something went wrong asking DeepOrbit.");
-  }
 });
 
 const PORT = process.env.PORT || 3000;
