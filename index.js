@@ -101,7 +101,7 @@ app.post('/slack/events', async (req, res) => {
       await postToSlack(channelId, fallback.data.textResponse || '...');
     } catch (err2) {
       console.error('[FALLBACK ERROR]', err2.message);
-      await postToSlack(channelId, ':boom: I'm having trouble reaching the LLM. Please try again later.');
+      await postToSlack(channelId, ':boom: I am having trouble reaching the LLM. Please try again later.');
     }
   }
 
