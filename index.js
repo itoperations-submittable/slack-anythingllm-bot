@@ -8,13 +8,14 @@ const { createClient } = require('redis');
 
 const app = express();
 
+// Verify Slack request signature using signing secret
 function verifySlackRequest(req, res, buf) {
   const timestamp = req.headers['x-slack-request-timestamp'];
   const slackSig = req.headers['x-slack-signature'];
   const baseString = `v0:${timestamp}:${buf}`;
   const mySig = 'v0=' + crypto.createHmac('sha256', process.env.SLACK_SIGNING_SECRET).update(baseString).digest('hex');
 
-  const isValid = slackSig && crypto.timingSafeEqual(Buffer.from(mySig), Buffer.from(slackSig));
+  const isValid = crypto.timingSafeEqual(Buffer.from(mySig), Buffer.from(slackSig));
   if (!isValid) {
     res.status(400).send('Invalid signature');
     throw new Error('Invalid Slack signature');
@@ -29,11 +30,13 @@ const {
   ANYTHINGLLM_API,
   ANYTHINGLLM_API_KEY,
   REDIS_URL,
-  DEV_MODE
+  DEV_MODE,
+  DEVELOPER_ID
 } = process.env;
 
 let redisClient;
 
+// Mock Redis in DEV_MODE, else connect to real Redis
 if (DEV_MODE === 'true') {
   console.log("🧪 DEV_MODE active: Redis is mocked.");
   redisClient = {
@@ -59,8 +62,6 @@ const workspaceAliases = {
   'data': 'data-provider', 'data provider': 'data-provider', 'provider': 'data-provider', 'api': 'data-provider'
 };
 
-const knownWorkspaces = new Set(Object.values(workspaceAliases).concat(['public']));
-
 function toSlug(str) {
   return str.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, '-');
 }
@@ -73,13 +74,10 @@ function resolveWorkspaceSlug(userInput) {
   return toSlug(userInput);
 }
 
-function isValidWorkspace(workspace) {
-  return knownWorkspaces.has(workspace);
-}
-
 async function determineWorkspace(message) {
   if (!message || !message.trim()) return 'public';
   const prompt = `User asked: "${message}". Which workspace from: GF Stripe, GF PayPal Checkout, Gravity Forms Core, GravityFlow, Docs, Internal Docs, GitHub, Data Provider best matches? Return only the name.`;
+
   try {
     const res = await axios.post(`${ANYTHINGLLM_API}/api/v1/workspace/public/chat`, {
       message: prompt,
@@ -91,10 +89,9 @@ async function determineWorkspace(message) {
 
     const result = res.data.textResponse?.trim() || 'unknown';
     console.log(`[Decision] LLM chose: "${result}" for message: "${message}"`);
-    const resolved = resolveWorkspaceSlug(result);
-    return isValidWorkspace(resolved) ? resolved : 'public';
+    return resolveWorkspaceSlug(result);
   } catch (error) {
-    console.error('[determineWorkspace] Error:', error);
+    console.error('Workspace determination failed:', error);
     return 'public';
   }
 }
@@ -106,29 +103,20 @@ async function postThinking(channel, thread_ts, isDM) {
   };
   if (!isDM) payload.thread_ts = thread_ts;
 
-  try {
-    const res = await axios.post('https://slack.com/api/chat.postMessage', payload, {
-      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-    });
-    return res.data.ts;
-  } catch (err) {
-    console.error('[postThinking] Error:', err);
-    return null;
-  }
+  const res = await axios.post('https://slack.com/api/chat.postMessage', payload, {
+    headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+  });
+  return res.data.ts;
 }
 
 async function updateMessage(channel, ts, text) {
-  try {
-    await axios.post('https://slack.com/api/chat.update', {
-      channel,
-      ts,
-      text
-    }, {
-      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
-    });
-  } catch (err) {
-    console.error('[updateMessage] Error:', err);
-  }
+  await axios.post('https://slack.com/api/chat.update', {
+    channel,
+    ts,
+    text
+  }, {
+    headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+  });
 }
 
 async function fetchStoredWorkspace(key) {
@@ -156,12 +144,10 @@ async function handleLLM(message, workspace, sessionId) {
   if (!message || vague.some(q => normalized.includes(q))) {
     return `👋 Hello! I'm *DeepOrbit*. I can help you with:
 
-• 💳 *Stripe* or *PayPal* add-ons
-• 🧰 *Gravity Forms* features, entries, and data generation
-• 🔄 *GravityFlow* workflows and approvals
-• 📚 *Docs* and internal documentation
-
-You can say: \`use docs\`, \`switch to gravityflow\`, or just ask a question!`;
+•  *Stripe* or *PayPal* add-ons.
+•  *Gravity Forms* Core.
+•  *GravityFlow* 
+•  *Docs* and *Internal docs*`
   }
 
   try {
@@ -172,12 +158,136 @@ You can say: \`use docs\`, \`switch to gravityflow\`, or just ask a question!`;
     }, {
       headers: { Authorization: `Bearer ${ANYTHINGLLM_API_KEY}` }
     });
-    return `🛰 *(Workspace: ${workspace})*\n\n${res.data.textResponse || 'No response.'}`;
+    return `💡 *Workspace*: ${workspace}
+
+${res.data.textResponse || 'No response.'}`;
   } catch (err) {
-    console.error('[handleLLM] Error:', err);
-    return `⚠️ Something went wrong while querying the workspace *${workspace}*. Falling back to *public*.`;
+    console.error('LLM chat error:', err);
+    return '❌ There was a problem reaching the LLM. Please try again.';
   }
 }
 
-// Server listener
+app.post('/slack/events', async (req, res) => {
+  res.status(200).end();
+
+  const { type, event, event_id } = req.body;
+  if (!event || event.bot_id) return;
+  if (!event.text || event.text.trim().length < 1) return;
+
+  // Only allow developer to use the bot
+  if (event.user !== DEVELOPER_ID) {
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel: event.channel,
+      text: "🛑 I'm still booting up. For now, I only talk to my creator 👽."
+    }, {
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+    });
+    return;
+  }
+
+  const alreadyHandled = await redisClient.get(`event:${event_id}`);
+  if (alreadyHandled) return;
+  await redisClient.set(`event:${event_id}`, '1', { EX: 60 });
+
+  const text = event.text || '';
+  const channel = event.channel;
+  const thread_ts = event.thread_ts || event.ts;
+  const isDM = event.channel_type === 'im';
+  const key = isDM ? event.user : thread_ts;
+
+  if (text.trim().toLowerCase() === 'reset') {
+    await resetWorkspace(key);
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      text: '🧹 Workspace context has been reset. You can start fresh!'
+    }, {
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+    });
+    return;
+  }
+
+  if (text.trim().toLowerCase() === 'topics') {
+    const helpText = `👋 I'm *DeepOrbit*. I can help you with:
+
+•  *Stripe* or *PayPal* add-ons.
+•  *Gravity Forms* Core.
+•  *GravityFlow* 
+•  *Docs* and *Internal docs*`;
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      text: helpText
+    }, {
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+    });
+    return;
+  }
+
+  let workspace = extractSwitchIntent(text);
+  if (workspace) {
+    await storeWorkspace(key, workspace);
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      text: `🛰 Workspace switched to *${workspace}*.`
+    }, {
+      headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+    });
+    return;
+  }
+
+  workspace = await fetchStoredWorkspace(key);
+  const question = text.replace(/#\{[^}]+\}/, '').trim();
+
+  if (!workspace) workspace = await determineWorkspace(question);
+  await storeWorkspace(key, workspace);
+
+  const loadingTs = await postThinking(channel, thread_ts, isDM);
+  const reply = await handleLLM(question, workspace, key);
+  await updateMessage(channel, loadingTs, reply);
+});
+
+app.post('/slack/askllm', async (req, res) => {
+  const { text, user_id, response_url } = req.body;
+  const key = user_id;
+
+  if (user_id !== DEVELOPER_ID) {
+    await axios.post(response_url, {
+      text: "🤖 Access denied. Only the chosen one may speak to me... for now."
+    });
+    return res.status(200).end();
+  }
+
+  if (!text || text.trim().length < 1) return res.status(200).end();
+
+  if (text.trim().toLowerCase() === 'reset') {
+    await resetWorkspace(key);
+    await axios.post(response_url, { text: '🧹 Workspace context has been reset. You can start fresh!' });
+    return res.status(200).end();
+  }
+
+  if (text.trim().toLowerCase() === 'topics') {
+    const helpText = `👋 I'm *DeepOrbit*. I can help you with:
+
+•  *Stripe* or *PayPal* add-ons.
+•  *Gravity Forms* Core.
+•  *GravityFlow* 
+•  *Docs* and *Internal docs*`;
+    await axios.post(response_url, { text: helpText });
+    return res.status(200).end();
+  }
+
+  const workspaceIntent = extractSwitchIntent(text);
+  if (workspaceIntent) await storeWorkspace(key, workspaceIntent);
+
+  let workspace = await fetchStoredWorkspace(key);
+  const question = text.replace(/#\{[^}]+\}/, '').trim();
+  if (!workspace) workspace = await determineWorkspace(question);
+  await storeWorkspace(key, workspace);
+
+  await axios.post(response_url, { text: ':hourglass_flowing_sand: DeepOrbit is thinking...' });
+  const reply = await handleLLM(question, workspace, key);
+  await axios.post(response_url, { text: reply });
+
+  res.status(200).end();
+});
+
 app.listen(3000, () => console.log('🚀 DeepOrbit running on port 3000'));
