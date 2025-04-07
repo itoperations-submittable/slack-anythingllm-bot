@@ -303,10 +303,44 @@ slackEvents.on('error', (error) => { /* ... log errors ... */ });
 // app.get('/', ...) route remains the same
 app.get('/', (req, res) => { /* ... health check response ... */ });
 
+// --- Start Server ---
+(async () => {
+    try {
+        app.listen(port, () => {
+            // This confirms the server is listening
+            console.log(`🚀 DeepOrbit running on port ${port}`);
 
-// --- Start Server & Graceful Shutdown ---
-// Startup and shutdown logic remains the same
-(async () => { /* ... start server ... */ })();
-async function shutdown(signal) { /* ... close redis, exit ... */ }
+            // Optional logs included from previous versions:
+            if (developerId) {
+                console.log(`🔒 Bot restricted to developer ID: ${developerId}`);
+            } else {
+                 console.log(`🔓 Bot is not restricted to a specific developer.`);
+            }
+            // Log current time on startup using a specific timezone
+            console.log(`🕒 Current Time: ${new Date().toLocaleString('en-US', { timeZone: 'Africa/Cairo' })} (Time in Cairo)`);
+        });
+    } catch (error) {
+        // This catches immediate errors during the listen() call itself
+        console.error("Failed to start server:", error);
+        process.exit(1);
+    }
+})();
+
+// --- Graceful Shutdown ---
+// (This part should also be at the end, typically after the startup block)
+async function shutdown(signal) {
+    console.log(`${signal} signal received: closing connections and shutting down.`);
+    if (redisClient?.isOpen) { // Check if client exists and is connected/open
+        try {
+            await redisClient.quit();
+            console.log('Redis connection closed gracefully.');
+        } catch(err) {
+            console.error('Error closing Redis connection:', err);
+        }
+    }
+    // Exit process after attempting cleanup
+    process.exit(0);
+}
+
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
