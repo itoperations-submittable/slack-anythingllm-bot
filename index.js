@@ -1,5 +1,5 @@
 // index.js
-// Version with full filter implementation, "Sphere" terminology, LLM Simplicity Check, Reset Conversation, Increased Timeouts
+// Version with Block Kit Formatting & Feedback Buttons
 
 import express from 'express';
 import { createEventAdapter } from '@slack/events-api';
@@ -16,45 +16,29 @@ const app = express();
 const port = process.env.PORT || 3000;
 const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
 const slackToken = process.env.SLACK_BOT_TOKEN;
-const botUserId = process.env.SLACK_BOT_USER_ID; // Bot's own User ID
+const botUserId = process.env.SLACK_BOT_USER_ID;
 const anythingLLMBaseUrl = process.env.LLM_API_BASE_URL;
 const anythingLLMApiKey = process.env.LLM_API_KEY;
-const developerId = process.env.DEVELOPER_ID; // Optional: Restrict usage
-const redisUrl = process.env.REDIS_URL; // Used for duplicate detection and reset state
+const developerId = process.env.DEVELOPER_ID;
+const redisUrl = process.env.REDIS_URL;
 
 // --- Input Validation ---
-if (!slackSigningSecret || !slackToken || !anythingLLMBaseUrl || !anythingLLMApiKey) {
-    console.error("Missing critical environment variables (SLACK_SIGNING_SECRET, SLACK_BOT_TOKEN, LLM_API_BASE_URL, LLM_API_KEY)");
-    process.exit(1);
-}
-if (!botUserId) {
-    console.error("SLACK_BOT_USER_ID environment variable is not set. This is required to prevent message loops.");
-    process.exit(1);
-}
-if (!redisUrl) {
-    console.warn("REDIS_URL is not set. Duplicate detection and 'reset conversation' may not work reliably.");
-}
+if (!slackSigningSecret || !slackToken || !anythingLLMBaseUrl || !anythingLLMApiKey) { console.error("Missing critical environment variables"); process.exit(1); }
+if (!botUserId) { console.error("SLACK_BOT_USER_ID environment variable is not set."); process.exit(1); }
+if (!redisUrl) { console.warn("REDIS_URL not set..."); }
 
 // --- Redis Client Setup ---
 let redisClient;
 let isRedisReady = false;
 if (redisUrl) {
-    redisClient = createClient({
-        url: redisUrl,
-        socket: { reconnectStrategy: retries => Math.min(retries * 100, 3000) },
-    });
+    redisClient = createClient({ url: redisUrl, socket: { reconnectStrategy: retries => Math.min(retries * 100, 3000) }});
     redisClient.on('error', err => { console.error('Redis error:', err); isRedisReady = false; });
     redisClient.on('connect', () => console.log('Redis connecting...'));
     redisClient.on('ready', () => { console.log('Redis connected!'); isRedisReady = true; });
     redisClient.on('end', () => { console.log('Redis connection closed.'); isRedisReady = false; });
     redisClient.connect().catch(err => console.error("Initial Redis connection failed:", err));
 } else {
-    // Dummy client if Redis isn't configured
-    redisClient = {
-        isReady: false,
-        set: async () => null, get: async() => null, del: async() => 0,
-        on: () => {}, connect: async () => {}, isOpen: false, quit: async () => {}
-    };
+    redisClient = { isReady: false, set: async () => null, get: async() => null, del: async() => 0, on: () => {}, connect: async () => {}, isOpen: false, quit: async () => {} };
     console.warn("Running without Redis connection. 'reset conversation' command will not function.");
 }
 
@@ -62,17 +46,12 @@ if (redisUrl) {
 const slackEvents = createEventAdapter(slackSigningSecret, { includeBody: true });
 const slack = new WebClient(slackToken);
 
-// --- Duplicate Event Detection (using Redis) ---
+// --- Duplicate Event Detection ---
 async function isDuplicateRedis(eventId) {
     if (!eventId) { console.warn("isDuplicateRedis: null eventId"); return true; }
-    if (!redisUrl || !isRedisReady) { return false; } // Cannot check if Redis isn't ready/configured
-    try {
-        const result = await redisClient.set(eventId, 'processed', { EX: 60, NX: true });
-        return result === null; // True if duplicate (already existed)
-    } catch (err) {
-        console.error('Redis error during duplicate check:', eventId, err);
-        return false; // Assume not duplicate on error
-    }
+    if (!redisUrl || !isRedisReady) { return false; }
+    try { const result = await redisClient.set(eventId, 'processed', { EX: 60, NX: true }); return result === null; }
+    catch (err) { console.error('Redis error duplicate check:', eventId, err); return false; }
 }
 
 // --- Simple Query Detection (using LLM) ---
@@ -82,68 +61,52 @@ async function isQuerySimpleLLM(query) {
     const classificationPrompt = `Analyze the user query below. Is it a simple social interaction (like a greeting, thanks, how are you), a basic question about the bot's function/capabilities (like 'what can you do?', 'help'), or a general conversational query NOT requiring specific knowledge from a specialized knowledge base? Answer ONLY with the word 'true' if it is simple/general, or 'false' if it likely requires specific knowledge. User Query: "${query}" Is Simple/General (true or false):`;
     try {
         const startTime = Date.now();
-        const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`,
-            { message: classificationPrompt, mode: 'chat' },
-            { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 15000 } // 15s timeout
-        );
+        const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, { message: classificationPrompt, mode: 'chat' }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 15000 });
         const duration = Date.now() - startTime;
         const resultText = response.data?.textResponse?.trim().toLowerCase();
         const isSimple = resultText === 'true';
         console.log(`[Simplicity Check] LLM Result: '${resultText}', Simple: ${isSimple}. Duration: ${duration}ms`);
         return isSimple;
-    } catch (error) {
-        console.error('[Simplicity Check Error] Failed LLM classification:', error.response?.data || error.message);
-        return false; // Assume not simple on error
-    }
+    } catch (error) { console.error('[Simplicity Check Error] Failed LLM classification:', error.response?.data || error.message); return false; }
 }
 
-// --- Sphere Decision Logic (Context-Aware - Formerly decideWorkspace/decideSector) ---
+// --- Sphere Decision Logic (Context-Aware) ---
 async function decideSphere(userQuestion, conversationHistory = "") {
     console.log(`[Sphere Decision] Starting for query: "${userQuestion}" with history.`);
-    let availableWorkspaces = []; // API response field name is still 'workspaces'
-
-    // 1. Get available workspaces/spheres
-    try {
+    let availableWorkspaces = [];
+    try { // Fetch workspaces
         console.log(`[Sphere Decision] Fetching available knowledge spheres (workspaces)...`);
-        const response = await axios.get(`${anythingLLMBaseUrl}/api/v1/workspaces`, {
-            headers: { 'Accept': 'application/json', Authorization: `Bearer ${anythingLLMApiKey}` },
-            timeout: 10000,
-        });
+        const response = await axios.get(`${anythingLLMBaseUrl}/api/v1/workspaces`, { headers: { 'Accept': 'application/json', Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 10000 });
         if (response.data && Array.isArray(response.data.workspaces)) {
-            availableWorkspaces = response.data.workspaces
-                .map(ws => ws.slug) // Still extracting the 'slug'
-                .filter(slug => slug && typeof slug === 'string');
+            availableWorkspaces = response.data.workspaces.map(ws => ws.slug).filter(slug => slug && typeof slug === 'string');
             console.log(`[Sphere Decision] Found slugs: ${availableWorkspaces.join(', ')}`);
         } else { throw new Error('Could not parse workspace list.'); }
         if (availableWorkspaces.length === 0) { console.warn('[Sphere Decision] No slugs found.'); return 'public'; }
     } catch (error) { console.error('[Sphere Decision Error] Fetch failed:', error.response?.data || error.message); return 'public'; }
 
-    // 2. Format context-aware prompt for the public/routing LLM
+    // Format context-aware prompt
     let selectionPrompt = "Consider the following conversation history (if any):\n";
     selectionPrompt += conversationHistory ? conversationHistory.trim() + "\n\n" : "[No History Provided]\n\n";
     selectionPrompt += `Based on the history (if any) and the latest user query: "${userQuestion}"\n\n`;
     selectionPrompt += `Which knowledge sphere (represented by a workspace slug) from this list [${availableWorkspaces.join(', ')}] is the most relevant context to answer the query?\n`;
     selectionPrompt += `Your answer should ONLY be the workspace slug itself, exactly as it appears in the list.`;
-
     console.log(`[Sphere Decision] Sending context-aware prompt to public routing.`);
 
-    // 3. Ask the public/routing LLM
+    // Ask the public/routing LLM
     try {
         const startTime = Date.now();
-        const selectionResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, {
-            message: selectionPrompt, mode: 'chat',
-        }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 35000 }); // Routing timeout (35s)
+        const selectionResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, { message: selectionPrompt, mode: 'chat' }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 35000 });
         const duration = Date.now() - startTime;
         console.log(`[Sphere Decision] Routing LLM call duration: ${duration}ms`);
 
-        // 4. Extract and validate the chosen slug
+        // Extract and validate the chosen slug
         const chosenSlugRaw = selectionResponse.data?.textResponse;
         console.log(`[Sphere Decision] Raw routing response: "${chosenSlugRaw}"`);
-        if (!chosenSlugRaw || typeof chosenSlugRaw !== 'string') { console.warn('[Sphere Decision] Bad routing response.'); return 'public';}
+        if (!chosenSlugRaw || typeof chosenSlugRaw !== 'string') { console.warn('[Sphere Decision] Bad routing response.'); return 'public'; }
         const chosenSlug = chosenSlugRaw.trim();
         if (availableWorkspaces.includes(chosenSlug)) {
             console.log(`[Sphere Decision] Context-aware valid slug selected: "${chosenSlug}"`);
-            return chosenSlug; // Return the slug (internal identifier)
+            return chosenSlug;
         } else {
             const foundSlug = availableWorkspaces.find(slug => chosenSlug.includes(slug));
             if (foundSlug) { console.log(`[Sphere Decision] Found valid slug "${foundSlug}" in noisy response.`); return foundSlug; }
@@ -155,7 +118,7 @@ async function decideSphere(userQuestion, conversationHistory = "") {
 // --- Constants ---
 const RESET_CONVERSATION_COMMAND = 'reset conversation';
 const RESET_HISTORY_REDIS_PREFIX = 'reset_history:channel:';
-const RESET_HISTORY_TTL = 300; // 5 minutes in seconds
+const RESET_HISTORY_TTL = 300; // 5 minutes
 
 // --- Main Slack Event Handler ---
 async function handleSlackMessageEvent(event) {
@@ -163,7 +126,7 @@ async function handleSlackMessageEvent(event) {
     const userId = event.user;
     const originalText = event.text?.trim() ?? '';
     const channel = event.channel;
-    const originalTs = event.ts;
+    const originalTs = event.ts; // Timestamp of the trigger message
     const threadTs = event.thread_ts;
 
     let cleanedQuery = originalText;
@@ -204,12 +167,11 @@ async function handleSlackMessageEvent(event) {
         console.log(`[Handler] Posted initial processing message (ts: ${thinkingMessageTs}).`);
     } catch (slackError) { console.error("[Slack Error] Failed post initial 'processing':", slackError.data?.error || slackError.message); }
 
-    // Check if History Reset Was Requested for this interaction
+    // Check if History Reset Was Requested
     let skipHistory = false;
     if (redisUrl && isRedisReady) {
         const resetKey = `${RESET_HISTORY_REDIS_PREFIX}${channel}`;
         try {
-            // Use GET and DEL in a transaction or check then delete
             const resetFlag = await redisClient.get(resetKey);
             if (resetFlag === 'true') {
                 console.log(`[Handler] Reset flag found for ${channel}. Skipping history.`);
@@ -224,13 +186,12 @@ async function handleSlackMessageEvent(event) {
     let sphere = null;
     let conversationHistory = "";
 
-    // LLM-Based Simple Query Check
     const isSimple = await isQuerySimpleLLM(cleanedQuery);
 
     if (isSimple) {
         sphere = 'public';
         console.log(`[Handler] LLM determined query is simple. Routing directly to Sphere: ${sphere}`);
-        skipHistory = true; // Ensure history is skipped if simple
+        skipHistory = true; // Ensure history is skipped
     } else {
         console.log(`[Handler] Query not simple. Potentially fetching history and deciding sphere...`);
         // Fetch Conversation History (Only if not simple AND reset not requested)
@@ -239,11 +200,8 @@ async function handleSlackMessageEvent(event) {
              console.log(`[Handler] Fetching history...`);
              try {
                  let historyResult;
-                 if (!isDM && threadTs) { // Thread history
-                     historyResult = await slack.conversations.replies({ channel, ts: threadTs, limit: HISTORY_LIMIT + 1});
-                 } else { // Channel/DM history
-                     historyResult = await slack.conversations.history({ channel, latest: originalTs, limit: HISTORY_LIMIT, inclusive: false });
-                 }
+                 if (!isDM && threadTs) { historyResult = await slack.conversations.replies({ channel, ts: threadTs, limit: HISTORY_LIMIT + 1}); }
+                 else { historyResult = await slack.conversations.history({ channel, latest: originalTs, limit: HISTORY_LIMIT, inclusive: false }); }
                  if (historyResult.ok && historyResult.messages) {
                      const relevantMessages = historyResult.messages.filter(msg => msg.user && msg.text && msg.user !== botUserId).reverse();
                      if (relevantMessages.length > 0) {
@@ -253,7 +211,7 @@ async function handleSlackMessageEvent(event) {
                      } else { console.log("[Handler] No relevant history messages found."); }
                  } else { console.warn("[Handler] Failed fetch history:", historyResult.error || "No messages"); }
              } catch (historyError) { console.error("[Slack History Error]", historyError); }
-        } else if (skipHistory) { console.log(`[Handler] Skipping history fetch due to reset request.`); }
+        } else if (skipHistory) { console.log(`[Handler] Skipping history fetch due to reset request or simple query.`); }
 
         // Decide Sphere Dynamically
         sphere = await decideSphere(cleanedQuery, conversationHistory);
@@ -273,31 +231,76 @@ async function handleSlackMessageEvent(event) {
 
     // Construct the Input for the Final LLM call
     let llmInputText = "";
-    if (conversationHistory && !skipHistory) { // Only add history if it exists AND wasn't skipped
+    if (conversationHistory && !skipHistory) {
         llmInputText += conversationHistory.trim() + "\n\n";
         llmInputText += `Based on the conversation history above and your knowledge, answer the following query:\n`;
-    } else if (skipHistory && conversationHistory) { // Log if history existed but was skipped
-         console.log("[Handler] History omitted from final LLM prompt due to reset request.");
-    }
+    } else if (skipHistory && conversationHistory) { console.log("[Handler] History omitted from final LLM prompt."); }
     llmInputText += `User Query: ${cleanedQuery}`;
     console.log(`[Handler] Sending input to LLM Sphere ${sphere}...`);
 
-    // Query the chosen LLM Sphere (API endpoint still uses 'workspace')
+    // Query the chosen LLM Sphere
     try {
         const llmStartTime = Date.now();
         const llmResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`, {
             message: llmInputText, mode: 'chat', sessionId: userId,
-        }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 90000 }); // 90s final timeout
+        }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 90000 });
         const llmDuration = Date.now() - llmStartTime;
         console.log(`[Handler] Final LLM call duration: ${llmDuration}ms`);
 
         const reply = llmResponse.data.textResponse || '⚠️ Sorry, I received an empty response.';
-        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: reply });
+
+        // --- Send final response using Block Kit for formatting & feedback ---
+        try {
+            await slack.chat.postMessage({
+                channel: channel,
+                thread_ts: replyTarget,
+                text: reply, // Fallback text
+                blocks: [
+                    {
+                        "type": "section",
+                        "text": { "type": "mrkdwn", "text": reply }
+                    },
+                    { "type": "divider" },
+                    {
+                        "type": "actions",
+                        "block_id": `feedback_${originalTs}`, // Use original message TS for context
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": { "type": "plain_text", "text": "👎 Bad", "emoji": true },
+                                "style": "danger",
+                                "value": "bad",
+                                "action_id": "feedback_bad"
+                            },
+                            {
+                                "type": "button",
+                                "text": { "type": "plain_text", "text": "👌 OK", "emoji": true },
+                                "value": "ok",
+                                "action_id": "feedback_ok"
+                            },
+                            {
+                                "type": "button",
+                                "text": { "type": "plain_text", "text": "👍 Great", "emoji": true },
+                                "style": "primary",
+                                "value": "great",
+                                "action_id": "feedback_great"
+                            }
+                        ]
+                    }
+                ]
+            });
+             console.log(`[Handler] Posted final response with feedback buttons to ${channel} (re: ${originalTs})`);
+        } catch(postError) {
+             console.error("[Slack Error] Failed post final response message:", postError.data?.error || postError.message);
+             // Fallback to simple text if blocks fail
+             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: reply + "\n\n_(Error displaying feedback buttons)_"}).catch(()=>{});
+        }
 
     } catch (error) {
         console.error(`[LLM Error - Sphere: ${sphere}]`, error.response?.data || error.message);
-        try { await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: '⚠️ DeepOrbit encountered an internal error.' }); }
-        catch (slackError) { console.error("[Slack Error] Failed post LLM error msg:", slackError.data?.error || slackError.message); }
+        try { // Attempt to notify user of error
+            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: '⚠️ DeepOrbit encountered an internal error.' });
+        } catch (slackError) { console.error("[Slack Error] Failed post LLM error msg:", slackError.data?.error || slackError.message); }
     } finally {
         // Clean up the thinking message
         if (thinkingMessageTs) {
@@ -318,27 +321,23 @@ slackEvents.on('message', async (event, body) => {
     const eventId = body?.event_id;
     if (await isDuplicateRedis(eventId)) { return; }
 
-    // --- Fully Expanded Filter ---
     const subtype = event.subtype;
     const messageUserId = event.user;
     const channelId = event.channel;
     const text = event.text?.trim() ?? '';
 
+    // Fully expanded filter condition
     if (
         subtype === 'bot_message' ||
         subtype === 'message_deleted' ||
         subtype === 'message_changed' ||
         subtype === 'channel_join' ||
         subtype === 'channel_leave' ||
-        subtype === 'thread_broadcast' || // Ignore thread replies broadcast to channel
-        !messageUserId || // Ignore messages without a user ID
-        !text || // Ignore messages without actual text content
-        messageUserId === botUserId // CRITICAL: Ignore messages sent by the bot itself
-    ) {
-        // console.log(`[Skipping Event] Reason: Subtype=${subtype}, User=${messageUserId}, IsBot=${messageUserId === botUserId}, NoText=${!text}`);
-        return; // Stop processing this event
-    }
-    // --- End Expanded Filter ---
+        subtype === 'thread_broadcast' ||
+        !messageUserId ||
+        !text ||
+        messageUserId === botUserId
+    ) { return; }
 
     const isDM = channelId.startsWith('D');
     const mentionString = `<@${botUserId}>`;
@@ -347,7 +346,7 @@ slackEvents.on('message', async (event, body) => {
     if (isDM || wasMentioned) { // Process only DMs or channel mentions
         console.log(`[Processing Event] ID: ${eventId}, User: ${messageUserId}, Channel: ${channelId}, isDM: ${isDM}, Mentioned: ${wasMentioned}`);
         handleSlackMessageEvent(event).catch(err => { console.error("[Unhandled Handler Error] Event ID:", eventId, err); });
-    } else { return; } // Ignore non-DM, non-mention channel messages
+    } else { return; } // Ignore other channel messages
 });
 
 slackEvents.on('error', (error) => {
@@ -382,7 +381,7 @@ async function shutdown(signal) {
         try { await redisClient.quit(); console.log('Redis connection closed gracefully.'); }
         catch(err) { console.error('Error closing Redis connection:', err); }
     }
-    setTimeout(() => process.exit(0), 500); // Allow time for logs to flush, etc.
+    setTimeout(() => process.exit(0), 500); // Allow time for logs
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
