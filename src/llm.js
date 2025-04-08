@@ -3,9 +3,10 @@ import {
     anythingLLMBaseUrl,
     anythingLLMApiKey,
     WORKSPACE_LIST_CACHE_KEY,
-    WORKSPACE_LIST_CACHE_TTL
+    WORKSPACE_LIST_CACHE_TTL,
+    redisUrl
 } from './config.js';
-import { redisClient, isRedisReady, redisUrl } from './services.js';
+import { redisClient, isRedisReady } from './services.js';
 
 // Cache for available workspace slugs
 let availableWorkspacesCache = null;
