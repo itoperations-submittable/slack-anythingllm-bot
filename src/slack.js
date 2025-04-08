@@ -232,8 +232,8 @@ async function handleSlackMessageEventInternal(event) {
         let llmInputText = "";
         if (conversationHistory && !skipHistory && workspaceSource === 'DynamicRouting') {
             // Only include explicitly fetched history if routing decided it was necessary
-            llmInputText += conversationHistory.trim() + "\n\nBased on the conversation history above...
-";
+            llmInputText += conversationHistory.trim() + "\n\nBased on the conversation history above...\n";
+            console.log(`[Slack Handler] Including history in final prompt.`); // Simplified log
         }
         llmInputText += `User Query: ${cleanedQuery}`;
 
