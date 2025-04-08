@@ -1,6 +1,7 @@
 import slackifyMarkdown from 'slackify-markdown';
-import { redisUrl, isRedisReady, redisClient } from './services.js'; // We'll create services.js next
+import { isRedisReady, redisClient } from './services.js'; // Correct: Import only client and status from services
 import {
+    redisUrl, // Correct: Import URL from config
     DUPLICATE_EVENT_REDIS_PREFIX,
     DUPLICATE_EVENT_TTL
 } from './config.js';
