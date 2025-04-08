@@ -186,22 +186,27 @@ async function handleSlackMessageEventInternal(event) {
 
         // 5b. Check for Manual Workspace Override (if not using thread cache)
         if (workspaceSource === 'DefaultPublic') {
-            if (cleanedQuery.startsWith(WORKSPACE_OVERRIDE_COMMAND_PREFIX)) {
-                const potentialWorkspace = cleanedQuery.substring(WORKSPACE_OVERRIDE_COMMAND_PREFIX.length).split(' ')[0];
-                 if (potentialWorkspace) {
-                     const availableWorkspaces = await getWorkspaces(); // Get list to validate against
-                     if (availableWorkspaces.includes(potentialWorkspace)) {
-                         sphere = potentialWorkspace;
-                         // Remove the command from the actual query
-                         cleanedQuery = cleanedQuery.substring(WORKSPACE_OVERRIDE_COMMAND_PREFIX.length + potentialWorkspace.length).trim();
-                         workspaceSource = 'ManualOverride';
-                         skipHistory = true; // Manual override implies user wants specific context now
-                         console.log(`[Slack Handler] Manual workspace override: "${sphere}". New query: "${cleanedQuery}"`);
-                    } else {
-                         console.warn(`[Slack Handler] Manual override "${potentialWorkspace}" is not an available workspace. Ignoring.`);
-                     }
-                 }
-             }
+            // Use regex to find the first occurrence of # followed by non-space characters
+            const overrideRegex = /#(\S+)/;
+            const match = cleanedQuery.match(overrideRegex);
+
+            if (match && match[1]) { // If regex match is found
+                const potentialWorkspace = match[1];
+                console.log(`[Slack Handler] Found potential manual override: "${potentialWorkspace}"`);
+
+                const availableWorkspaces = await getWorkspaces(); // Get list to validate against
+                if (availableWorkspaces.includes(potentialWorkspace)) {
+                    sphere = potentialWorkspace;
+                    // Remove the matched override tag (e.g., "#gf-stripe") from the query string
+                    // cleanedQuery = cleanedQuery.replace(match[0], '').trim(); // --- Keep the tag in the query
+                    workspaceSource = 'ManualOverride';
+                    skipHistory = true; // Manual override implies user wants specific context now
+                    console.log(`[Slack Handler] Manual workspace override confirmed: "${sphere}". Query remains: "${cleanedQuery}"`); // Updated log
+               } else {
+                    // Log if the specified workspace doesn't exist, but continue (will likely use dynamic routing or default)
+                    console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not an available workspace. Ignoring.`);
+                }
+            }
         }
 
         // 5c. Dynamic Routing (if no cache or override)
