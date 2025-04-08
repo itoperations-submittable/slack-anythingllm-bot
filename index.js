@@ -1,5 +1,5 @@
 // index.js
-// FINAL FULL Version: No placeholders, includes all features.
+// FINAL FULL Version: Truly no placeholders, includes all features.
 
 import express from 'express';
 import { createEventAdapter } from '@slack/events-api';
@@ -24,6 +24,7 @@ const anythingLLMApiKey = process.env.LLM_API_KEY;
 const developerId = process.env.DEVELOPER_ID; // Optional: Restrict usage
 const redisUrl = process.env.REDIS_URL; // Used for duplicate detection and reset state
 const databaseUrl = process.env.DATABASE_URL; // For feedback DB
+const MAX_SLACK_BLOCK_TEXT_LENGTH = 2900; // Target max length for text within a block
 
 // --- Input Validation ---
 if (!slackSigningSecret || !slackToken || !anythingLLMBaseUrl || !anythingLLMApiKey) {
@@ -117,6 +118,7 @@ async function isDuplicateRedis(eventId) {
     }
 }
 
+
 // --- Sphere Decision Logic (Context-Aware) ---
 async function decideSphere(userQuestion, conversationHistory = "") {
     console.log(`[Sphere Decision] Starting for query: "${userQuestion}" with history.`);
@@ -148,6 +150,7 @@ async function decideSphere(userQuestion, conversationHistory = "") {
     }
 
     // 2. Format context-aware prompt for the public/routing LLM
+    // Updated prompt text to use "Sphere" but still ask for the "workspace slug"
     let selectionPrompt = "Consider the following conversation history (if any):\n";
     selectionPrompt += conversationHistory ? conversationHistory.trim() + "\n\n" : "[No History Provided]\n\n";
     selectionPrompt += `Based on the history (if any) and the latest user query: "${userQuestion}"\n\n`;
@@ -176,17 +179,19 @@ async function decideSphere(userQuestion, conversationHistory = "") {
             return 'public';
         }
         const chosenSlug = chosenSlugRaw.trim();
+        // Check if the response exactly matches one of the slugs
         if (availableWorkspaces.includes(chosenSlug)) {
             console.log(`[Sphere Decision] Context-aware valid slug selected: "${chosenSlug}"`);
-            return chosenSlug;
+            return chosenSlug; // Return the slug (internal identifier)
         } else {
+            // Fallback check: Try finding a known slug within the response
             const foundSlug = availableWorkspaces.find(slug => chosenSlug.includes(slug));
             if (foundSlug) {
                 console.log(`[Sphere Decision] Found valid slug "${foundSlug}" in noisy response "${chosenSlug}".`);
                 return foundSlug;
             }
             console.warn(`[Sphere Decision] Invalid slug response "${chosenSlug}". Falling back.`);
-            return 'public';
+            return 'public'; // Fallback if validation fails
         }
     } catch (error) {
         console.error('[Sphere Decision Error] Failed query public workspace:', error.response?.data || error.message);
@@ -199,16 +204,16 @@ const RESET_CONVERSATION_COMMAND = 'reset conversation';
 const RESET_HISTORY_REDIS_PREFIX = 'reset_history:channel:';
 const RESET_HISTORY_TTL = 300; // 5 minutes in seconds
 
-// --- Function to Store Feedback (Database Implementation - UPDATED) ---
+// --- Function to Store Feedback (Database Implementation) ---
 async function storeFeedback(feedbackData) {
     if (!databaseUrl || !pool) { // Check if DB is configured
-        console.warn("DATABASE_URL not configured, logging feedback to console instead.");
+        console.warn("DATABASE_URL not configured, logging feedback to console only.");
         console.log("--- FEEDBACK (Console Log) ---");
         console.log(JSON.stringify(feedbackData, null, 2));
         console.log("-----------------------------");
         return;
     }
-    // UPDATED query to include original_user_message_text
+    // Updated query to include original_user_message_text
     const insertQuery = `
         INSERT INTO feedback (
             feedback_value, user_id, channel_id, bot_message_ts,
@@ -219,14 +224,10 @@ async function storeFeedback(feedbackData) {
     `;
     // Ensure all values exist, provide defaults or null if necessary
     const values = [
-        feedbackData.feedback_value || null,
-        feedbackData.user_id || null,
-        feedbackData.channel_id || null,
-        feedbackData.bot_message_ts || null,
-        feedbackData.original_user_message_ts || null, // Might be null
-        feedbackData.action_id || null,
-        feedbackData.sphere_slug || null, // Pass this from interaction handler!
-        feedbackData.bot_message_text || null, // Optional field
+        feedbackData.feedback_value || null, feedbackData.user_id || null,
+        feedbackData.channel_id || null, feedbackData.bot_message_ts || null,
+        feedbackData.original_user_message_ts || null, feedbackData.action_id || null,
+        feedbackData.sphere_slug || null, feedbackData.bot_message_text || null,
         feedbackData.original_user_message_text || null // Added user question text
     ];
 
@@ -252,6 +253,60 @@ async function storeFeedback(feedbackData) {
         }
     }
 }
+
+// --- Helper Function to Split Long Messages ---
+function splitMessageIntoChunks(text, maxLength) {
+    const chunks = [];
+    if (!text) return chunks; // Handle null/empty text
+    let remainingText = text;
+
+    // Prioritize splitting by double newline (paragraph), then single newline, then sentences, then spaces
+    const splitters = ['\n\n', '\n', '. ', '! ', '? ', ' '];
+
+    while (remainingText.length > 0) {
+        if (remainingText.length <= maxLength) {
+            chunks.push(remainingText);
+            break;
+        }
+
+        let bestSplitIndex = -1;
+        // Try to find the best split point backwards from maxLength
+        for (const splitter of splitters) {
+             // Search from slightly before maxLength to ensure the chunk + splitter fits
+             let searchEnd = Math.min(maxLength, remainingText.length -1);
+             let splitIndex = remainingText.lastIndexOf(splitter, searchEnd);
+
+             // Ensure we don't split on the very first character if splitter is space etc., prefer later splits
+             if (splitIndex > 0 && splitIndex > bestSplitIndex) {
+                  // Calculate where the cut happens - after the splitter
+                  bestSplitIndex = splitIndex + splitter.length;
+             } else if (splitIndex === 0 && splitter.length === 1 && bestSplitIndex <= 0) {
+                  // Handle case where only a single space is found at start, avoid infinite loop
+                  bestSplitIndex = 1;
+             }
+        }
+
+        // If no preferred splitter found within limit, force split at maxLength
+        if (bestSplitIndex <= 0) {
+            console.warn(`[Splitter] Forced split at ${maxLength} chars.`);
+            bestSplitIndex = maxLength;
+        }
+
+        // Ensure we don't create zero-length chunks if split is right at the end
+        if (bestSplitIndex > 0) {
+            chunks.push(remainingText.substring(0, bestSplitIndex));
+            remainingText = remainingText.substring(bestSplitIndex).trimStart(); // Trim leading space for next chunk
+        } else {
+            // Failsafe - should not happen with logic above, but prevents infinite loop
+            console.error("[Splitter] Failed to find valid split point. Taking remaining text.");
+            chunks.push(remainingText);
+            remainingText = "";
+        }
+    }
+    // Filter out potentially empty chunks if splitting logic creates them
+    return chunks.filter(chunk => chunk.length > 0);
+}
+
 
 // --- Main Slack Event Handler ---
 async function handleSlackMessageEvent(event) {
@@ -329,10 +384,10 @@ async function handleSlackMessageEvent(event) {
     let sphere = null;
     let conversationHistory = ""; // Initialize history
 
-    // NOTE: LLM Simplicity Check was removed as requested. Dynamic routing always occurs now.
+    // NOTE: LLM Simplicity Check was removed. Dynamic routing always occurs now.
     console.log(`[Handler] Fetching history (if applicable) and deciding sphere dynamically...`);
 
-    // Fetch Conversation History (Only if not reset)
+    // Fetch Conversation History (Only if not skipped)
     const HISTORY_LIMIT = 10; // How many messages to fetch
     if (!skipHistory && (isDM || wasMentioned)) { // Check skipHistory flag
          console.log(`[Handler] Fetching history...`);
@@ -436,55 +491,57 @@ async function handleSlackMessageEvent(event) {
             // console.log("[Handler] Successfully converted response using slackify-markdown."); // Optional log
         } catch (conversionError) {
             console.error("[Handler] Error converting response with slackify-markdown, using raw reply:", conversionError);
-            // Keep slackFormattedReply = rawReply in case of error
+            // Keep using raw reply if conversion fails
         }
 
-        // --- Truncation logic is REMOVED ---
+        // --- Split message if needed ---
+        const messageChunks = splitMessageIntoChunks(slackFormattedReply, MAX_SLACK_BLOCK_TEXT_LENGTH);
+        console.log(`[Handler] Response split into ${messageChunks.length} chunk(s).`);
 
-        // --- Send final response using Block Kit ---
-        try {
-            await slack.chat.postMessage({
-                channel: channel,
-                thread_ts: replyTarget,
-                text: slackFormattedReply, // Use full formatted reply as fallback text
-                blocks: [
-                    { // Response text block
-                        "type": "section",
-                        // Use the full formatted reply here
-                        "text": { "type": "mrkdwn", "text": slackFormattedReply }
-                    },
-                    { // Divider
-                        "type": "divider"
-                    },
-                    { // Feedback buttons block
-                        "type": "actions",
-                        "block_id": `feedback_${originalTs}_${sphere}`, // Include sphere in block_id
-                        "elements": [
-                            { // Bad button
-                                "type": "button",
-                                "text": { "type": "plain_text", "text": "👎", "emoji": true },
-                                "style": "danger", "value": "bad", "action_id": "feedback_bad"
-                            },
-                            { // OK button
-                                "type": "button",
-                                "text": { "type": "plain_text", "text": "👌", "emoji": true },
-                                "value": "ok", "action_id": "feedback_ok"
-                            },
-                            { // Great button
-                                "type": "button",
-                                "text": { "type": "plain_text", "text": "👍", "emoji": true },
-                                "style": "primary", "value": "great", "action_id": "feedback_great"
-                            }
-                        ]
-                    }
-                ]
-            });
-             console.log(`[Handler] Posted final response with feedback buttons to ${channel} (re: ${originalTs}, sphere: ${sphere})`);
-        } catch(postError) {
-             console.error("[Slack Error] Failed post final response message with blocks (maybe due to length?):", postError.data?.error || postError.message);
-             // Fallback to simple text (formatted but not truncated) if blocks fail
-             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: slackFormattedReply + "\n\n_(Error displaying feedback buttons)_"}).catch(()=>{});
-        }
+        // --- Send final response(s) using Block Kit ---
+        for (let i = 0; i < messageChunks.length; i++) {
+            const chunk = messageChunks[i];
+            const isLastChunk = i === messageChunks.length - 1;
+
+            // Construct blocks for this chunk
+            const currentBlocks = [
+                { "type": "section", "text": { "type": "mrkdwn", "text": chunk } }
+            ];
+
+            // Add divider and feedback buttons ONLY to the last chunk
+            if (isLastChunk) {
+                currentBlocks.push({ "type": "divider" });
+                currentBlocks.push({
+                    "type": "actions",
+                    "block_id": `feedback_${originalTs}_${sphere}`, // Include context
+                    "elements": [
+                         { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
+                         { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
+                         { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
+                    ]
+                });
+            }
+
+            try {
+                // Post the current chunk
+                await slack.chat.postMessage({
+                    channel: channel,
+                    thread_ts: replyTarget, // Ensure all chunks go to the same thread/reply context
+                    text: chunk, // Fallback text for this chunk
+                    blocks: currentBlocks
+                });
+                 console.log(`[Handler] Posted chunk ${i + 1}/${messageChunks.length} to ${channel} (re: ${originalTs})`);
+                 // Optional: Add slight delay between posts if needed for very rapid chunks, although await should mostly handle order.
+                 // if (messageChunks.length > 1 && !isLastChunk) await new Promise(resolve => setTimeout(resolve, 300));
+            } catch(postError) {
+                 console.error(`[Slack Error] Failed post chunk ${i + 1}:`, postError.data?.error || postError.message);
+                 // Attempt to post error message for this failure
+                  await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${i + 1} of the response)_` }).catch(()=>{});
+                  // Stop sending further chunks on error
+                  break;
+            }
+        } // End loop through chunks
+
 
     } catch (error) { // Catch LLM call error
         console.error(`[LLM Error - Sphere: ${sphere}]`, error.response?.data || error.message);
@@ -531,67 +588,66 @@ app.post('/slack/interactions', express.urlencoded({ extended: true, limit: '1mb
         if (payload.type === 'block_actions' && payload.actions?.[0]) {
             const action = payload.actions[0];
             const actionId = action.action_id;
-            const feedbackValue = action.value;
             const userId = payload.user.id;
             const channelId = payload.channel.id;
-            const messageTs = payload.message.ts; // Bot message TS
-            const blockId = action.block_id;
+            const messageTs = payload.message.ts; // Bot message TS (the one with buttons)
+            const blockId = action.block_id; // e.g., "feedback_12345.678_general"
 
-            let originalQuestionTs = null;
-            let responseSphere = null;
-            if (blockId?.startsWith('feedback_')) { // Extract data from block_id
-                const parts = blockId.substring(9).split('_');
-                originalQuestionTs = parts[0];
-                if (parts.length > 1) { responseSphere = parts.slice(1).join('_'); }
+            // Handle Feedback Buttons
+            if (actionId.startsWith('feedback_')) {
+                 const feedbackValue = action.value;
+                 let originalQuestionTs = null;
+                 let responseSphere = null;
+                 if (blockId?.startsWith('feedback_')) { // Extract context from block_id
+                     const parts = blockId.substring(9).split('_');
+                     originalQuestionTs = parts[0];
+                     if (parts.length > 1) { responseSphere = parts.slice(1).join('_'); }
+                 }
+                 console.log(`[Interaction] Feedback received: User ${userId}, Value ${feedbackValue}, OriginalTS ${originalQuestionTs}, Sphere ${responseSphere}`);
+
+                 // Fetch Original User Message Text
+                 let originalQuestionText = null;
+                 if (originalQuestionTs && channelId) {
+                     try {
+                         const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
+                         if (historyResult.ok && historyResult.messages?.[0]) { originalQuestionText = historyResult.messages[0].text; }
+                         else { console.warn(`[Interaction] Could not find original message for feedback.`); }
+                     } catch (historyError) { console.error(`[Interaction] Error fetching original message for feedback:`, historyError); }
+                 }
+
+                 // Store the feedback
+                 await storeFeedback({
+                     feedback_ts: new Date().toISOString(), feedback_value: feedbackValue,
+                     user_id: userId, channel_id: channelId, bot_message_ts: messageTs,
+                     original_user_message_ts: originalQuestionTs, action_id: actionId,
+                     sphere_slug: responseSphere, bot_message_text: payload.message?.blocks?.[0]?.text?.text,
+                     original_user_message_text: originalQuestionText
+                 });
+
+                 // Optional: Update the original message to show feedback was received
+                 try {
+                     await slack.chat.update({
+                         channel: channelId, ts: messageTs,
+                         text: payload.message.text + "\n\n_🙏 Thanks for the feedback!_", // Update fallback
+                         blocks: [ // Keep original text block, replace actions block with context
+                              payload.message.blocks[0], // Assumes first block is the text section
+                              { "type": "context", "elements": [ { "type": "mrkdwn", "text": `_🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
+                         ]
+                     });
+                      console.log(`[Interaction] Updated original message ${messageTs}.`);
+                 } catch (updateError) { console.warn("Failed update message after feedback:", updateError.data?.error || updateError.message); }
+            } else {
+                console.log("[Interaction] Unhandled action_id:", actionId);
             }
-
-            console.log(`[Interaction] User ${userId} clicked '${actionId}' (Value: ${feedbackValue}) on msg ${messageTs}. Original TS: ${originalQuestionTs}, Response Sphere: ${responseSphere}`);
-
-            // Fetch Original User Message Text
-            let originalQuestionText = null;
-            if (originalQuestionTs && channelId) {
-                try {
-                    console.log(`[Interaction] Fetching original message text for ts: ${originalQuestionTs}`);
-                    const historyResult = await slack.conversations.history({
-                        channel: channelId,
-                        latest: originalQuestionTs,
-                        oldest: originalQuestionTs, // Fetch just this one message
-                        inclusive: true,
-                        limit: 1
-                    });
-                    if (historyResult.ok && historyResult.messages && historyResult.messages.length > 0) {
-                        originalQuestionText = historyResult.messages[0].text;
-                        console.log(`[Interaction] Found original message text.`);
-                    } else { console.warn(`[Interaction] Could not find original message for ts ${originalQuestionTs}. Error: ${historyResult.error}`); }
-                } catch (historyError) { console.error(`[Interaction] Error fetching original message text:`, historyError); }
-            } else { console.warn(`[Interaction] Missing context to fetch original question text.`); }
-
-            // Store the feedback
-            await storeFeedback({
-                feedback_ts: new Date().toISOString(), feedback_value: feedbackValue,
-                user_id: userId, channel_id: channelId, bot_message_ts: messageTs,
-                original_user_message_ts: originalQuestionTs, action_id: actionId,
-                sphere_slug: responseSphere, // Include sphere slug
-                bot_message_text: payload.message?.blocks?.[0]?.text?.text, // Include bot response text
-                original_user_message_text: originalQuestionText // Include user question text
-            });
-
-            // Optional: Update the original message to show feedback was received
-            try {
-                await slack.chat.update({
-                    channel: channelId, ts: messageTs,
-                    text: payload.message.text + "\n\n_🙏 Thanks for the feedback!_", // Update fallback
-                    blocks: [
-                         payload.message.blocks[0], // Original text block
-                         { "type": "context", "elements": [ { "type": "mrkdwn", "text": `_🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
-                    ]
-                });
-                 console.log(`[Interaction] Updated original message ${messageTs}.`);
-            } catch (updateError) { console.warn("Failed update message after feedback:", updateError.data?.error || updateError.message); }
-
-        } else if (payload.type === 'view_submission') { console.log("[Interaction] Received view submission"); }
-        else { console.log("[Interaction] Received unhandled interaction type:", payload.type); }
-    } catch (error) { console.error("[Interaction Handling Error]", error); }
+        } else if (payload.type === 'view_submission') {
+             console.log("[Interaction] Received view submission");
+             // Add logic to handle modal submissions here if needed
+        } else {
+            console.log("[Interaction] Received unhandled interaction type:", payload.type);
+        }
+    } catch (error) {
+        console.error("[Interaction Handling Error]", error);
+    }
 });
 
 
@@ -600,21 +656,41 @@ slackEvents.on('message', async (event, body) => {
     const eventId = body?.event_id;
     if (await isDuplicateRedis(eventId)) { return; }
 
-    // Filter irrelevant messages
+    // --- Fully Expanded Filter ---
     const subtype = event.subtype;
     const messageUserId = event.user;
     const channelId = event.channel;
     const text = event.text?.trim() ?? '';
-    if ( subtype === 'bot_message' || subtype === 'message_deleted' || subtype === 'message_changed' || subtype === 'channel_join' || subtype === 'channel_leave' || subtype === 'thread_broadcast' || !messageUserId || !text || messageUserId === botUserId ) { return; }
 
-    // Check for DM or mention
+    if (
+        subtype === 'bot_message' ||
+        subtype === 'message_deleted' ||
+        subtype === 'message_changed' ||
+        subtype === 'channel_join' ||
+        subtype === 'channel_leave' ||
+        subtype === 'thread_broadcast' ||
+        !messageUserId || // Ignore messages without a user ID
+        !text || // Ignore messages without actual text content
+        messageUserId === botUserId // CRITICAL: Ignore messages sent by the bot itself
+    ) {
+        // console.log(`[Skipping Event] Reason: Subtype=${subtype}, User=${messageUserId}, IsBot=${messageUserId === botUserId}, NoText=${!text}`);
+        return; // Stop processing this event
+    }
+    // --- End Expanded Filter ---
+
     const isDM = channelId.startsWith('D');
     const mentionString = `<@${botUserId}>`;
     const wasMentioned = text.includes(mentionString);
-    if (isDM || wasMentioned) {
+
+    if (isDM || wasMentioned) { // Process only DMs or channel mentions
         console.log(`[Processing Event] ID: ${eventId}, User: ${messageUserId}, Channel: ${channelId}, isDM: ${isDM}, Mentioned: ${wasMentioned}`);
-        handleSlackMessageEvent(event).catch(err => { console.error("[Unhandled Handler Error] Event ID:", eventId, err); });
-    } else { return; }
+        // Call handler asynchronously, don't await here to ensure quick response to Slack
+        handleSlackMessageEvent(event).catch(err => {
+            console.error("[Unhandled Handler Error] Event ID:", eventId, err);
+        });
+    } else {
+        return; // Ignore non-DM, non-mention channel messages silently
+    }
 });
 
 slackEvents.on('error', (error) => {
@@ -648,12 +724,22 @@ app.get('/', (req, res) => {
 // --- Graceful Shutdown ---
 async function shutdown(signal) {
     console.log(`${signal} signal received: closing connections and shutting down.`);
+    // Close Redis connection gracefully
     if (redisClient?.isOpen) { // Check if client exists and is connected/open
         try {
             await redisClient.quit();
             console.log('Redis connection closed gracefully.');
         } catch(err) {
             console.error('Error closing Redis connection:', err);
+        }
+    }
+    // Close Database pool gracefully
+    if (pool && databaseUrl) { // Check if pool was initialized
+        try {
+            await pool.end();
+            console.log('Database pool closed gracefully.');
+        } catch (err) {
+            console.error('Error closing Database pool:', err);
         }
     }
     // Allow time for logs to flush, connections to close etc.
