@@ -10,10 +10,12 @@ import {
     THREAD_WORKSPACE_TTL,
     WORKSPACE_OVERRIDE_COMMAND_PREFIX,
     MAX_SLACK_BLOCK_TEXT_LENGTH,
-    RESET_CONVERSATION_COMMAND
+    RESET_CONVERSATION_COMMAND,
+    databaseUrl,
+    redisUrl
 } from './config.js';
 import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage } from './utils.js';
-import { redisClient, isRedisReady, redisUrl, dbPool, databaseUrl } from './services.js';
+import { redisClient, isRedisReady, dbPool } from './services.js';
 import { decideSphere, queryLlm, getWorkspaces } from './llm.js';
 
 // Initialize Slack clients
