@@ -119,79 +119,117 @@ async function isDuplicateRedis(eventId) {
 }
 
 
-// --- Sphere Decision Logic (Context-Aware) ---
+// --- Sphere Decision Logic (Context-Aware, UPDATED with Redis Cache for Workspace List) ---
 async function decideSphere(userQuestion, conversationHistory = "") {
     console.log(`[Sphere Decision] Starting for query: "${userQuestion}" with history.`);
-    let availableWorkspaces = []; // API response field name is still 'workspaces'
+    let availableWorkspaces = [];
+    const workspaceListCacheKey = 'anythingllm:workspaces_list';
+    const workspaceListCacheTTL = 600; // Cache for 600 seconds (10 minutes)
 
-    // 1. Get available workspaces/spheres
-    try {
-        console.log(`[Sphere Decision] Fetching available knowledge spheres (workspaces)...`);
-        const response = await axios.get(`${anythingLLMBaseUrl}/api/v1/workspaces`, {
-            headers: { 'Accept': 'application/json', Authorization: `Bearer ${anythingLLMApiKey}` },
-            timeout: 10000, // 10s timeout for fetching workspace list
-        });
-        if (response.data && Array.isArray(response.data.workspaces)) {
-            availableWorkspaces = response.data.workspaces
-                .map(ws => ws.slug) // Still extracting the 'slug'
-                .filter(slug => slug && typeof slug === 'string');
-            console.log(`[Sphere Decision] Found slugs: ${availableWorkspaces.join(', ')}`);
-        } else {
-            console.error('[Sphere Decision] Unexpected workspace list structure:', response.data);
-            throw new Error('Could not parse workspace list.');
+    // 1. Try to fetch workspace list from cache
+    let source = 'API'; // Assume API initially
+    if (redisUrl && isRedisReady) {
+        try {
+            const cachedData = await redisClient.get(workspaceListCacheKey);
+            if (cachedData) {
+                availableWorkspaces = JSON.parse(cachedData); // Parse cached JSON array
+                console.log(`[Sphere Decision] Cache HIT for workspace list. Found ${availableWorkspaces.length} slugs.`);
+                source = 'Cache';
+            } else {
+                 console.log(`[Sphere Decision] Cache MISS for workspace list.`);
+            }
+        } catch (err) {
+            console.error(`[Redis Error] Failed to get workspace cache key ${workspaceListCacheKey}:`, err);
+            // Proceed to fetch from API if cache read fails
         }
-        if (availableWorkspaces.length === 0) {
-            console.warn('[Sphere Decision] No available slugs found.');
-            return 'public'; // Fallback if list is empty
-        }
-    } catch (error) {
-        console.error('[Sphere Decision Error] Fetch failed:', error.response?.data || error.message);
-        return 'public'; // Fallback if fetch fails
     }
 
-    // 2. Format context-aware prompt for the public/routing LLM
-    // Updated prompt text to use "Sphere" but still ask for the "workspace slug"
+    // 2. If cache miss or Redis error, fetch from API
+    if (source === 'API') {
+        try {
+            console.log(`[Sphere Decision] Fetching available knowledge spheres (workspaces) from API...`);
+            const response = await axios.get(`${anythingLLMBaseUrl}/api/v1/workspaces`, {
+                headers: { 'Accept': 'application/json', Authorization: `Bearer ${anythingLLMApiKey}` },
+                timeout: 10000,
+            });
+
+            if (response.data && Array.isArray(response.data.workspaces)) {
+                availableWorkspaces = response.data.workspaces
+                    .map(ws => ws.slug)
+                    .filter(slug => slug && typeof slug === 'string');
+                console.log(`[Sphere Decision] API returned ${availableWorkspaces.length} slugs.`);
+
+                // Store the successfully fetched list in cache
+                if (redisUrl && isRedisReady && availableWorkspaces.length > 0) {
+                    try {
+                        await redisClient.set(workspaceListCacheKey, JSON.stringify(availableWorkspaces), { EX: workspaceListCacheTTL });
+                        console.log(`[Sphere Decision] Updated Redis cache key ${workspaceListCacheKey} with TTL ${workspaceListCacheTTL}s.`);
+                    } catch (cacheSetError) {
+                         console.error(`[Redis Error] Failed to set workspace cache key ${workspaceListCacheKey}:`, cacheSetError);
+                    }
+                }
+            } else {
+                console.error('[Sphere Decision] Unexpected API response structure:', response.data);
+                throw new Error('Could not parse workspace list.');
+            }
+
+            if (availableWorkspaces.length === 0) {
+                console.warn('[Sphere Decision] No available slugs found from API.');
+                return 'public'; // Fallback if list is empty
+            }
+        } catch (error) {
+            console.error('[Sphere Decision Error] API Fetch failed:', error.response?.data || error.message);
+            // If API fails AND we didn't hit cache, we have no list, so fallback
+            if (availableWorkspaces.length === 0) {
+                console.error('[Sphere Decision] API fetch failed and no cached list available. Falling back to public.');
+                return 'public';
+            } else {
+                 console.warn('[Sphere Decision] API fetch failed, but proceeding with potentially stale cached list.');
+                 // Note: availableWorkspaces might hold data from a failed cache read attempt if logic gets complex,
+                 // ensure it's truly empty if API fails *and* cache failed/missed.
+                 // The current logic seems okay: if API fails, we only proceed if cache hit earlier.
+                 // If API fails and cache miss/error, it returns public.
+            }
+        }
+    }
+
+    // --- Now we have availableWorkspaces either from Cache or API ---
+    if (availableWorkspaces.length === 0) {
+         console.error("[Sphere Decision] Logic Error: No workspace slugs available after fetch/cache attempts. Falling back.");
+         return 'public'; // Should ideally not happen if checks above are correct
+    }
+
+
+    // 3. Format context-aware prompt for the public/routing LLM
     let selectionPrompt = "Consider the following conversation history (if any):\n";
     selectionPrompt += conversationHistory ? conversationHistory.trim() + "\n\n" : "[No History Provided]\n\n";
     selectionPrompt += `Based on the history (if any) and the latest user query: "${userQuestion}"\n\n`;
     selectionPrompt += `Which knowledge sphere (represented by a workspace slug) from this list [${availableWorkspaces.join(', ')}] is the most relevant context to answer the query?\n`;
     selectionPrompt += `Your answer should ONLY be the workspace slug itself, exactly as it appears in the list.`;
 
-    console.log(`[Sphere Decision] Sending context-aware prompt to public routing.`);
+    console.log(`[Sphere Decision] Sending context-aware prompt (using ${source} list) to public routing.`);
 
-    // 3. Ask the public/routing LLM
+    // 4. Ask the public/routing LLM
     try {
         const startTime = Date.now();
         const selectionResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, {
             message: selectionPrompt, mode: 'chat',
-        }, {
-            headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
-            timeout: 35000 // Routing timeout (35s)
-        });
+        }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 35000 });
         const duration = Date.now() - startTime;
         console.log(`[Sphere Decision] Routing LLM call duration: ${duration}ms`);
 
-        // 4. Extract and validate the chosen slug
+        // 5. Extract and validate the chosen slug
         const chosenSlugRaw = selectionResponse.data?.textResponse;
         console.log(`[Sphere Decision] Raw routing response: "${chosenSlugRaw}"`);
-        if (!chosenSlugRaw || typeof chosenSlugRaw !== 'string') {
-            console.warn('[Sphere Decision] Bad routing response.');
-            return 'public';
-        }
+        if (!chosenSlugRaw || typeof chosenSlugRaw !== 'string') { console.warn('[Sphere Decision] Bad routing response.'); return 'public';}
         const chosenSlug = chosenSlugRaw.trim();
-        // Check if the response exactly matches one of the slugs
         if (availableWorkspaces.includes(chosenSlug)) {
             console.log(`[Sphere Decision] Context-aware valid slug selected: "${chosenSlug}"`);
-            return chosenSlug; // Return the slug (internal identifier)
+            return chosenSlug;
         } else {
-            // Fallback check: Try finding a known slug within the response
             const foundSlug = availableWorkspaces.find(slug => chosenSlug.includes(slug));
-            if (foundSlug) {
-                console.log(`[Sphere Decision] Found valid slug "${foundSlug}" in noisy response "${chosenSlug}".`);
-                return foundSlug;
-            }
-            console.warn(`[Sphere Decision] Invalid slug response "${chosenSlug}". Falling back.`);
-            return 'public'; // Fallback if validation fails
+            if (foundSlug) { console.log(`[Sphere Decision] Found valid slug "${foundSlug}" in noisy response.`); return foundSlug; }
+            console.warn(`[Sphere Decision] Invalid slug response "${chosenSlug}". Falling back.`); return 'public';
         }
     } catch (error) {
         console.error('[Sphere Decision Error] Failed query public workspace:', error.response?.data || error.message);
