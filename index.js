@@ -1,5 +1,5 @@
 // index.js
-// FINAL Version: Includes slackify-markdown, all features, no placeholders.
+// FINAL FULL Version: No placeholders, includes all features.
 
 import express from 'express';
 import { createEventAdapter } from '@slack/events-api';
@@ -7,8 +7,8 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import { createClient } from 'redis';
 import { WebClient } from '@slack/web-api';
-import slackifyMarkdown from 'slackify-markdown'; // <<<=== IMPORT slackify-markdown
-import pg from 'pg'; // Import pg for database (if added)
+import slackifyMarkdown from 'slackify-markdown';
+import pg from 'pg';
 
 // Load environment variables
 dotenv.config();
@@ -24,8 +24,6 @@ const anythingLLMApiKey = process.env.LLM_API_KEY;
 const developerId = process.env.DEVELOPER_ID; // Optional: Restrict usage
 const redisUrl = process.env.REDIS_URL; // Used for duplicate detection and reset state
 const databaseUrl = process.env.DATABASE_URL; // For feedback DB
-const MAX_SLACK_BLOCK_TEXT_LENGTH = 2900; // Max chars for section block text (Slack limit is ~3000)
-
 
 // --- Input Validation ---
 if (!slackSigningSecret || !slackToken || !anythingLLMBaseUrl || !anythingLLMApiKey) {
@@ -47,14 +45,22 @@ if (!databaseUrl) {
 let redisClient;
 let isRedisReady = false;
 if (redisUrl) {
-    redisClient = createClient({ url: redisUrl, socket: { reconnectStrategy: retries => Math.min(retries * 100, 3000) }});
+    redisClient = createClient({
+        url: redisUrl,
+        socket: { reconnectStrategy: retries => Math.min(retries * 100, 3000) },
+    });
     redisClient.on('error', err => { console.error('Redis error:', err); isRedisReady = false; });
     redisClient.on('connect', () => console.log('Redis connecting...'));
     redisClient.on('ready', () => { console.log('Redis connected!'); isRedisReady = true; });
     redisClient.on('end', () => { console.log('Redis connection closed.'); isRedisReady = false; });
     redisClient.connect().catch(err => console.error("Initial Redis connection failed:", err));
 } else {
-    redisClient = { isReady: false, set: async () => null, get: async() => null, del: async() => 0, on: () => {}, connect: async () => {}, isOpen: false, quit: async () => {} };
+    // Dummy client if Redis isn't configured
+    redisClient = {
+        isReady: false,
+        set: async () => null, get: async() => null, del: async() => 0,
+        on: () => {}, connect: async () => {}, isOpen: false, quit: async () => {}
+    };
     console.warn("Running without Redis connection. 'reset conversation' command will not function.");
 }
 
@@ -65,14 +71,28 @@ if (databaseUrl) {
         connectionString: databaseUrl,
         // ssl: { rejectUnauthorized: false } // Uncomment/adjust if needed for cloud DBs
     });
-    pool.on('error', (err, client) => { console.error('Unexpected DB pool error', err); });
+    pool.on('error', (err, client) => {
+         console.error('Unexpected DB pool error', err);
+         // Consider exiting or implementing more robust error handling
+    });
     console.log("PostgreSQL Pool configured.");
 } else {
     // Dummy pool if no DB URL
     pool = {
-        query: async () => { console.warn("DB query attempted but DATABASE_URL not set."); return { rows: [] }; },
-        connect: async () => ({ query: async () => {}, release: () => {} })
+        query: async (...args) => {
+             console.warn("DB query attempted but DATABASE_URL not set. Args:", args);
+             // Simulate expected structure for RETURNING id
+             return { rows: [{ id: null }], rowCount: 0, command: 'INSERT' };
+        },
+        connect: async () => ({
+            query: async (...args) => {
+                console.warn("DB query attempted on dummy client but DATABASE_URL not set. Args:", args);
+                return { rows: [{ id: null }], rowCount: 0, command: 'INSERT' };
+            },
+            release: () => {}
+        })
     };
+    console.warn("Running without Database connection for feedback.");
 }
 
 
@@ -83,115 +103,153 @@ const slack = new WebClient(slackToken);
 // --- Duplicate Event Detection (using Redis) ---
 async function isDuplicateRedis(eventId) {
     if (!eventId) { console.warn("isDuplicateRedis: null eventId"); return true; }
-    if (!redisUrl || !isRedisReady) { return false; }
+    if (!redisUrl || !isRedisReady) {
+        // console.log("[Duplicate Check] Skipping check: Redis unavailable."); // Optional log
+        return false; // Cannot check if Redis isn't ready/configured
+    }
     try {
         const result = await redisClient.set(eventId, 'processed', { EX: 60, NX: true });
+        // result will be null if the key already existed (duplicate)
         return result === null;
-    } catch (err) { console.error('Redis error duplicate check:', eventId, err); return false; }
+    } catch (err) {
+        console.error('Redis error during duplicate check:', eventId, err);
+        return false; // Assume not duplicate on error to avoid dropping messages
+    }
 }
-
-// --- Simple Query Detection (using LLM) ---
-async function isQuerySimpleLLM(query) {
-    console.log(`[Simplicity Check] Asking LLM if query is simple: "${query}"`);
-    if (!query) return false;
-    const classificationPrompt = `Analyze the user query below. Is it a simple social interaction (like a greeting, thanks, how are you), a basic question about the bot's function/capabilities (like 'what can you do?', 'help'), or a general conversational query NOT requiring specific knowledge from a specialized knowledge base? Answer ONLY with the word 'true' if it is simple/general, or 'false' if it likely requires specific knowledge. User Query: "${query}" Is Simple/General (true or false):`;
-    try {
-        const startTime = Date.now();
-        const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`,
-            { message: classificationPrompt, mode: 'chat' },
-            { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 15000 }
-        );
-        const duration = Date.now() - startTime;
-        const resultText = response.data?.textResponse?.trim().toLowerCase();
-        const isSimple = resultText === 'true';
-        console.log(`[Simplicity Check] LLM Result: '${resultText}', Simple: ${isSimple}. Duration: ${duration}ms`);
-        return isSimple;
-    } catch (error) { console.error('[Simplicity Check Error] Failed LLM classification:', error.response?.data || error.message); return false; }
-}
-
 
 // --- Sphere Decision Logic (Context-Aware) ---
 async function decideSphere(userQuestion, conversationHistory = "") {
     console.log(`[Sphere Decision] Starting for query: "${userQuestion}" with history.`);
-    let availableWorkspaces = [];
-    try { // Fetch workspaces
-        console.log(`[Sphere Decision] Fetching available knowledge spheres (workspaces)...`);
-        const response = await axios.get(`${anythingLLMBaseUrl}/api/v1/workspaces`, { headers: { 'Accept': 'application/json', Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 10000 });
-        if (response.data && Array.isArray(response.data.workspaces)) {
-            availableWorkspaces = response.data.workspaces.map(ws => ws.slug).filter(slug => slug && typeof slug === 'string');
-            console.log(`[Sphere Decision] Found slugs: ${availableWorkspaces.join(', ')}`);
-        } else { throw new Error('Could not parse workspace list.'); }
-        if (availableWorkspaces.length === 0) { console.warn('[Sphere Decision] No slugs found.'); return 'public'; }
-    } catch (error) { console.error('[Sphere Decision Error] Fetch failed:', error.response?.data || error.message); return 'public'; }
+    let availableWorkspaces = []; // API response field name is still 'workspaces'
 
-    // Format context-aware prompt
+    // 1. Get available workspaces/spheres
+    try {
+        console.log(`[Sphere Decision] Fetching available knowledge spheres (workspaces)...`);
+        const response = await axios.get(`${anythingLLMBaseUrl}/api/v1/workspaces`, {
+            headers: { 'Accept': 'application/json', Authorization: `Bearer ${anythingLLMApiKey}` },
+            timeout: 10000, // 10s timeout for fetching workspace list
+        });
+        if (response.data && Array.isArray(response.data.workspaces)) {
+            availableWorkspaces = response.data.workspaces
+                .map(ws => ws.slug) // Still extracting the 'slug'
+                .filter(slug => slug && typeof slug === 'string');
+            console.log(`[Sphere Decision] Found slugs: ${availableWorkspaces.join(', ')}`);
+        } else {
+            console.error('[Sphere Decision] Unexpected workspace list structure:', response.data);
+            throw new Error('Could not parse workspace list.');
+        }
+        if (availableWorkspaces.length === 0) {
+            console.warn('[Sphere Decision] No available slugs found.');
+            return 'public'; // Fallback if list is empty
+        }
+    } catch (error) {
+        console.error('[Sphere Decision Error] Fetch failed:', error.response?.data || error.message);
+        return 'public'; // Fallback if fetch fails
+    }
+
+    // 2. Format context-aware prompt for the public/routing LLM
     let selectionPrompt = "Consider the following conversation history (if any):\n";
     selectionPrompt += conversationHistory ? conversationHistory.trim() + "\n\n" : "[No History Provided]\n\n";
     selectionPrompt += `Based on the history (if any) and the latest user query: "${userQuestion}"\n\n`;
     selectionPrompt += `Which knowledge sphere (represented by a workspace slug) from this list [${availableWorkspaces.join(', ')}] is the most relevant context to answer the query?\n`;
     selectionPrompt += `Your answer should ONLY be the workspace slug itself, exactly as it appears in the list.`;
+
     console.log(`[Sphere Decision] Sending context-aware prompt to public routing.`);
 
-    // Ask the public/routing LLM
+    // 3. Ask the public/routing LLM
     try {
         const startTime = Date.now();
-        const selectionResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, { message: selectionPrompt, mode: 'chat' }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 35000 });
+        const selectionResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, {
+            message: selectionPrompt, mode: 'chat',
+        }, {
+            headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
+            timeout: 35000 // Routing timeout (35s)
+        });
         const duration = Date.now() - startTime;
         console.log(`[Sphere Decision] Routing LLM call duration: ${duration}ms`);
 
-        // Extract and validate the chosen slug
+        // 4. Extract and validate the chosen slug
         const chosenSlugRaw = selectionResponse.data?.textResponse;
         console.log(`[Sphere Decision] Raw routing response: "${chosenSlugRaw}"`);
-        if (!chosenSlugRaw || typeof chosenSlugRaw !== 'string') { console.warn('[Sphere Decision] Bad routing response.'); return 'public'; }
+        if (!chosenSlugRaw || typeof chosenSlugRaw !== 'string') {
+            console.warn('[Sphere Decision] Bad routing response.');
+            return 'public';
+        }
         const chosenSlug = chosenSlugRaw.trim();
         if (availableWorkspaces.includes(chosenSlug)) {
             console.log(`[Sphere Decision] Context-aware valid slug selected: "${chosenSlug}"`);
             return chosenSlug;
         } else {
             const foundSlug = availableWorkspaces.find(slug => chosenSlug.includes(slug));
-            if (foundSlug) { console.log(`[Sphere Decision] Found valid slug "${foundSlug}" in noisy response.`); return foundSlug; }
-            console.warn(`[Sphere Decision] Invalid slug "${chosenSlug}". Falling back.`); return 'public';
+            if (foundSlug) {
+                console.log(`[Sphere Decision] Found valid slug "${foundSlug}" in noisy response "${chosenSlug}".`);
+                return foundSlug;
+            }
+            console.warn(`[Sphere Decision] Invalid slug response "${chosenSlug}". Falling back.`);
+            return 'public';
         }
-    } catch (error) { console.error('[Sphere Decision Error] Failed query public:', error.response?.data || error.message); return 'public'; }
+    } catch (error) {
+        console.error('[Sphere Decision Error] Failed query public workspace:', error.response?.data || error.message);
+        return 'public'; // Fallback on error
+    }
 }
 
 // --- Constants ---
 const RESET_CONVERSATION_COMMAND = 'reset conversation';
 const RESET_HISTORY_REDIS_PREFIX = 'reset_history:channel:';
-const RESET_HISTORY_TTL = 300;
+const RESET_HISTORY_TTL = 300; // 5 minutes in seconds
 
-// --- Function to Store Feedback (Database Implementation) ---
+// --- Function to Store Feedback (Database Implementation - UPDATED) ---
 async function storeFeedback(feedbackData) {
     if (!databaseUrl || !pool) { // Check if DB is configured
-        console.warn("DATABASE_URL not configured, logging feedback to console only.");
+        console.warn("DATABASE_URL not configured, logging feedback to console instead.");
         console.log("--- FEEDBACK (Console Log) ---");
         console.log(JSON.stringify(feedbackData, null, 2));
         console.log("-----------------------------");
         return;
     }
+    // UPDATED query to include original_user_message_text
     const insertQuery = `
         INSERT INTO feedback (
             feedback_value, user_id, channel_id, bot_message_ts,
-            original_user_message_ts, action_id, sphere_slug, bot_message_text
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            original_user_message_ts, action_id, sphere_slug, bot_message_text,
+            original_user_message_text
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id;
     `;
+    // Ensure all values exist, provide defaults or null if necessary
     const values = [
-        feedbackData.feedback_value || null, feedbackData.user_id || null,
-        feedbackData.channel_id || null, feedbackData.bot_message_ts || null,
-        feedbackData.original_user_message_ts || null, feedbackData.action_id || null,
-        feedbackData.sphere_slug || null, feedbackData.bot_message_text || null
+        feedbackData.feedback_value || null,
+        feedbackData.user_id || null,
+        feedbackData.channel_id || null,
+        feedbackData.bot_message_ts || null,
+        feedbackData.original_user_message_ts || null, // Might be null
+        feedbackData.action_id || null,
+        feedbackData.sphere_slug || null, // Pass this from interaction handler!
+        feedbackData.bot_message_text || null, // Optional field
+        feedbackData.original_user_message_text || null // Added user question text
     ];
-    let client;
+
+    let client; // Declare client outside try
     try {
-        client = await pool.connect();
+        client = await pool.connect(); // Get client from pool
         console.log(`[DB Feedback] Inserting feedback: User=${values[1]}, Value=${values[0]}, Sphere=${values[6]}`);
         const result = await client.query(insertQuery, values);
-        console.log(`[DB Feedback] Feedback saved with ID: ${result.rows[0].id}`);
+        // Check if insertion was successful and ID was returned
+        if (result.rows && result.rows.length > 0 && result.rows[0].id) {
+             console.log(`[DB Feedback] Feedback saved with ID: ${result.rows[0].id}`);
+        } else {
+             console.warn('[DB Feedback] Feedback insertion seemed successful, but no ID returned.');
+        }
     } catch (err) {
         console.error('[DB Feedback Error] Failed to insert feedback:', err);
+        // Optional: Implement retry logic or log to a fallback mechanism
     } finally {
-        if (client) { client.release(); /* console.log("[DB Feedback] Released client."); */ } // Release client
+        // VERY IMPORTANT: Release the client back to the pool
+        if (client) {
+            client.release();
+            // console.log("[DB Feedback] Released client connection."); // Can be noisy
+        }
     }
 }
 
@@ -201,7 +259,7 @@ async function handleSlackMessageEvent(event) {
     const userId = event.user;
     const originalText = event.text?.trim() ?? '';
     const channel = event.channel;
-    const originalTs = event.ts;
+    const originalTs = event.ts; // Timestamp of the trigger message
     const threadTs = event.thread_ts;
 
     let cleanedQuery = originalText;
@@ -210,7 +268,7 @@ async function handleSlackMessageEvent(event) {
     if (wasMentioned) { cleanedQuery = originalText.replace(mentionString, '').trim(); }
 
     const isDM = channel.startsWith('D');
-    const replyTarget = isDM ? undefined : (threadTs || originalTs);
+    const replyTarget = isDM ? undefined : (threadTs || originalTs); // Determine reply target early
 
     console.log(`[Handler] Start. User: ${userId}, Chan: ${channel}, isDM: ${isDM}, Mentioned: ${wasMentioned}, Query: "${cleanedQuery}"`);
 
@@ -220,7 +278,7 @@ async function handleSlackMessageEvent(event) {
         if (redisUrl && isRedisReady) {
             try {
                 const resetKey = `${RESET_HISTORY_REDIS_PREFIX}${channel}`;
-                await redisClient.set(resetKey, 'true', { EX: RESET_HISTORY_TTL });
+                await redisClient.set(resetKey, 'true', { EX: RESET_HISTORY_TTL }); // Set flag with TTL
                 console.log(`[Handler] Set reset flag ${resetKey} with TTL ${RESET_HISTORY_TTL}s.`);
                 await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "✅ Conversation context will be ignored for your next message." });
             } catch (redisError) {
@@ -231,92 +289,141 @@ async function handleSlackMessageEvent(event) {
             console.warn("[Handler] Cannot process reset: Redis unavailable.");
             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "⚠️ Cannot reset conversation context (feature unavailable)." });
         }
-        return;
+        return; // Stop processing the command itself
     }
 
-    // Post Initial Processing Message
+    // Post Initial Processing Message Immediately
     let thinkingMessageTs = null;
     try {
-        const initialMsg = await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: ":hourglass_flowing_sand: DeepOrbit is processing..." });
+        const initialMsg = await slack.chat.postMessage({
+            channel,
+            thread_ts: replyTarget,
+            text: ":hourglass_flowing_sand: DeepOrbit is processing..." // Generic initial message
+        });
         thinkingMessageTs = initialMsg.ts;
         console.log(`[Handler] Posted initial processing message (ts: ${thinkingMessageTs}).`);
-    } catch (slackError) { console.error("[Slack Error] Failed post initial 'processing':", slackError.data?.error || slackError.message); }
+    } catch (slackError) {
+         console.error("[Slack Error] Failed post initial 'processing' message:", slackError.data?.error || slackError.message);
+         // Continue even if this fails, but we won't be able to update/delete it
+    }
 
-    // Check if History Reset Was Requested
+    // Check if History Reset Was Requested for this interaction
     let skipHistory = false;
     if (redisUrl && isRedisReady) {
         const resetKey = `${RESET_HISTORY_REDIS_PREFIX}${channel}`;
         try {
             const resetFlag = await redisClient.get(resetKey);
             if (resetFlag === 'true') {
-                console.log(`[Handler] Reset flag found for ${channel}. Skipping history.`);
+                console.log(`[Handler] Reset flag found for ${channel}. Skipping history fetch.`);
                 skipHistory = true;
-                await redisClient.del(resetKey);
+                await redisClient.del(resetKey); // Delete flag after reading it
                  console.log(`[Handler] Deleted reset flag ${resetKey}.`);
             }
-        } catch(redisError) { console.error(`[Redis Error] Failed check/delete reset flag ${resetKey}:`, redisError); }
+        } catch(redisError) {
+             console.error(`[Redis Error] Failed check/delete reset flag ${resetKey}:`, redisError);
+             // Proceed without skipping history if Redis check fails
+        }
     }
 
     // Determine Target Sphere
     let sphere = null;
-    let conversationHistory = "";
+    let conversationHistory = ""; // Initialize history
 
-    const isSimple = await isQuerySimpleLLM(cleanedQuery);
+    // NOTE: LLM Simplicity Check was removed as requested. Dynamic routing always occurs now.
+    console.log(`[Handler] Fetching history (if applicable) and deciding sphere dynamically...`);
 
-    if (isSimple) {
-        sphere = 'public';
-        console.log(`[Handler] LLM determined query is simple. Routing directly to Sphere: ${sphere}`);
-        skipHistory = true;
-    } else {
-        console.log(`[Handler] Query not simple. Potentially fetching history and deciding sphere...`);
-        // Fetch Conversation History (Only if not simple AND reset not requested)
-        const HISTORY_LIMIT = 10;
-        if (!skipHistory && (isDM || wasMentioned)) {
-             console.log(`[Handler] Fetching history...`);
-             try {
-                 let historyResult;
-                 if (!isDM && threadTs) { historyResult = await slack.conversations.replies({ channel, ts: threadTs, limit: HISTORY_LIMIT + 1}); }
-                 else { historyResult = await slack.conversations.history({ channel, latest: originalTs, limit: HISTORY_LIMIT, inclusive: false }); }
-                 if (historyResult.ok && historyResult.messages) {
-                     const relevantMessages = historyResult.messages.filter(msg => msg.user && msg.text && msg.user !== botUserId).reverse();
-                     if (relevantMessages.length > 0) {
-                         conversationHistory = "Conversation History:\n";
-                         relevantMessages.forEach(msg => { conversationHistory += `User ${msg.user}: ${msg.text}\n`; });
-                          console.log(`[Handler] Fetched ${relevantMessages.length} history messages.`);
-                     } else { console.log("[Handler] No relevant history messages found."); }
-                 } else { console.warn("[Handler] Failed fetch history:", historyResult.error || "No messages"); }
-             } catch (historyError) { console.error("[Slack History Error]", historyError); }
-        } else if (skipHistory) { console.log(`[Handler] Skipping history fetch.`); }
+    // Fetch Conversation History (Only if not reset)
+    const HISTORY_LIMIT = 10; // How many messages to fetch
+    if (!skipHistory && (isDM || wasMentioned)) { // Check skipHistory flag
+         console.log(`[Handler] Fetching history...`);
+         try {
+             let historyResult;
+             if (!isDM && threadTs) { // Mentioned in a channel thread
+                 console.log(`[Handler] Fetching thread replies: Channel=${channel}, ThreadTS=${threadTs}`);
+                 historyResult = await slack.conversations.replies({
+                     channel: channel,
+                     ts: threadTs,
+                     limit: HISTORY_LIMIT + 1, // Fetch a bit more, filter later
+                 });
+             } else { // DM or Mentioned in channel (not thread)
+                 console.log(`[Handler] Fetching history: Channel=${channel}, Latest=${originalTs}, isDM=${isDM}`);
+                 historyResult = await slack.conversations.history({
+                     channel: channel,
+                     latest: originalTs, // Fetch messages strictly BEFORE this one
+                     limit: HISTORY_LIMIT,
+                     inclusive: false
+                 });
+             }
 
-        // Decide Sphere Dynamically
-        sphere = await decideSphere(cleanedQuery, conversationHistory);
-        console.log(`[Handler] Dynamically decided Sphere: ${sphere}`);
+             if (historyResult.ok && historyResult.messages) {
+                 const relevantMessages = historyResult.messages
+                     // Filter out messages without user/text, and messages from the bot itself
+                     .filter(msg => msg.user && msg.text && msg.user !== botUserId)
+                     .reverse(); // Arrange oldest to newest for prompt context
+
+                 if (relevantMessages.length > 0) {
+                     conversationHistory = "Conversation History:\n"; // Assign to the existing variable
+                     relevantMessages.forEach(msg => {
+                         // Basic formatting, could fetch user names if needed (adds latency)
+                         conversationHistory += `User ${msg.user}: ${msg.text}\n`;
+                     });
+                      console.log(`[Handler] Fetched ${relevantMessages.length} relevant history messages.`);
+                 } else { console.log("[Handler] No relevant prior messages found in history."); }
+             } else { console.warn("[Handler] Failed fetch history:", historyResult.error || "No messages found"); }
+         } catch (historyError) {
+             console.error("[Slack History Error]", historyError);
+             // Keep conversationHistory = "" if error occurs
+         }
+    } else if (skipHistory) {
+        console.log(`[Handler] Skipping history fetch due to reset request.`);
     }
 
+    // Decide Sphere Dynamically (using history if fetched & not skipped)
+    sphere = await decideSphere(cleanedQuery, conversationHistory); // Pass potentially empty history
+    console.log(`[Handler] Dynamically decided Sphere: ${sphere}`);
+    // --- End Sphere Determination ---
+
+
     // Update Thinking Message with Sphere Info
-    if (thinkingMessageTs) {
+    if (thinkingMessageTs) { // Only update if the initial post was successful
         try {
-            await slack.chat.update({ channel, ts: thinkingMessageTs, text: `:hourglass_flowing_sand: DeepOrbit is thinking... (Sphere: ${sphere})`});
+            await slack.chat.update({
+                channel: channel,
+                ts: thinkingMessageTs,
+                // Updated text to use "Sphere"
+                text: `:hourglass_flowing_sand: DeepOrbit is thinking... (Sphere: ${sphere})`
+            });
              console.log(`[Handler] Updated thinking message (ts: ${thinkingMessageTs}) with Sphere: ${sphere}.`);
-        } catch (updateError) { console.warn(`[Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
+        } catch (updateError) {
+             console.warn(`[Handler] Failed to update thinking message (ts: ${thinkingMessageTs}):`, updateError.data?.error || updateError.message);
+             // Proceed anyway, user just sees the initial "processing..." message
+        }
     }
 
     // Construct the Input for the Final LLM call
     let llmInputText = "";
+    // Use history in prompt ONLY if it wasn't skipped and was successfully fetched
     if (conversationHistory && !skipHistory) {
         llmInputText += conversationHistory.trim() + "\n\n";
         llmInputText += `Based on the conversation history above and your knowledge, answer the following query:\n`;
-    } else if (skipHistory && conversationHistory) { console.log("[Handler] History omitted from final LLM prompt."); }
-    llmInputText += `User Query: ${cleanedQuery}`;
-    console.log(`[Handler] Sending input to LLM Sphere ${sphere}...`);
+    } else if (skipHistory && conversationHistory) { // Log if history existed but was skipped
+         console.log("[Handler] History omitted from final LLM prompt due to reset request.");
+    }
+    llmInputText += `User Query: ${cleanedQuery}`; // Append the user's actual query
+    console.log(`[Handler] Sending input to LLM Sphere ${sphere}...`); // Avoid logging full input
 
-    // Query the chosen LLM Sphere
+
+    // Query the chosen LLM Sphere (API endpoint still uses 'workspace')
     try {
         const llmStartTime = Date.now();
-        const llmResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`,
-            { message: llmInputText, mode: 'chat', sessionId: userId },
-            { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 90000 } // 90s final timeout
-        );
+        const llmResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`, { // Use sphere slug here
+            message: llmInputText, // Use the combined history + query input
+            mode: 'chat',
+            sessionId: userId, // Keep for LLM's potential internal state tracking
+        }, {
+            headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
+            timeout: 90000, // 90s final timeout
+        });
         const llmDuration = Date.now() - llmStartTime;
         console.log(`[Handler] Final LLM call duration: ${llmDuration}ms`);
 
@@ -326,55 +433,71 @@ async function handleSlackMessageEvent(event) {
         let slackFormattedReply = rawReply;
         try {
             slackFormattedReply = slackifyMarkdown(rawReply);
-            // console.log("[Handler] Successfully converted response using slackify-markdown."); // Optional: Less verbose log
+            // console.log("[Handler] Successfully converted response using slackify-markdown."); // Optional log
         } catch (conversionError) {
             console.error("[Handler] Error converting response with slackify-markdown, using raw reply:", conversionError);
+            // Keep slackFormattedReply = rawReply in case of error
         }
 
-        // Truncate reply if needed
-        let truncatedReply = slackFormattedReply;
-        let isTruncated = false;
-        if (slackFormattedReply.length > MAX_SLACK_BLOCK_TEXT_LENGTH) {
-            truncatedReply = slackFormattedReply.substring(0, MAX_SLACK_BLOCK_TEXT_LENGTH) + "... \n\n_(message truncated due to length)_";
-            isTruncated = true;
-            console.log(`[Handler] Response truncated from ${slackFormattedReply.length} to ${MAX_SLACK_BLOCK_TEXT_LENGTH} chars.`);
-        }
+        // --- Truncation logic is REMOVED ---
 
-        // Send final response using Block Kit
+        // --- Send final response using Block Kit ---
         try {
             await slack.chat.postMessage({
                 channel: channel,
                 thread_ts: replyTarget,
-                text: truncatedReply, // Fallback text
+                text: slackFormattedReply, // Use full formatted reply as fallback text
                 blocks: [
-                    { "type": "section", "text": { "type": "mrkdwn", "text": truncatedReply } },
-                    { "type": "divider" },
-                    {
+                    { // Response text block
+                        "type": "section",
+                        // Use the full formatted reply here
+                        "text": { "type": "mrkdwn", "text": slackFormattedReply }
+                    },
+                    { // Divider
+                        "type": "divider"
+                    },
+                    { // Feedback buttons block
                         "type": "actions",
                         "block_id": `feedback_${originalTs}_${sphere}`, // Include sphere in block_id
                         "elements": [
-                            { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
-                            { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
-                            { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
+                            { // Bad button
+                                "type": "button",
+                                "text": { "type": "plain_text", "text": "👎", "emoji": true },
+                                "style": "danger", "value": "bad", "action_id": "feedback_bad"
+                            },
+                            { // OK button
+                                "type": "button",
+                                "text": { "type": "plain_text", "text": "👌", "emoji": true },
+                                "value": "ok", "action_id": "feedback_ok"
+                            },
+                            { // Great button
+                                "type": "button",
+                                "text": { "type": "plain_text", "text": "👍", "emoji": true },
+                                "style": "primary", "value": "great", "action_id": "feedback_great"
+                            }
                         ]
                     }
                 ]
             });
-             console.log(`[Handler] Posted final response (truncated: ${isTruncated}) with feedback buttons to ${channel} (re: ${originalTs}, sphere: ${sphere})`);
+             console.log(`[Handler] Posted final response with feedback buttons to ${channel} (re: ${originalTs}, sphere: ${sphere})`);
         } catch(postError) {
-             console.error("[Slack Error] Failed post final response message with blocks:", postError.data?.error || postError.message);
-             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: truncatedReply + "\n\n_(Error displaying feedback buttons)_"}).catch(()=>{});
+             console.error("[Slack Error] Failed post final response message with blocks (maybe due to length?):", postError.data?.error || postError.message);
+             // Fallback to simple text (formatted but not truncated) if blocks fail
+             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: slackFormattedReply + "\n\n_(Error displaying feedback buttons)_"}).catch(()=>{});
         }
 
     } catch (error) { // Catch LLM call error
         console.error(`[LLM Error - Sphere: ${sphere}]`, error.response?.data || error.message);
-        try { await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: '⚠️ DeepOrbit encountered an internal error.' }); }
-        catch (slackError) { console.error("[Slack Error] Failed post LLM error msg:", slackError.data?.error || slackError.message); }
+        try { // Attempt to notify user of error
+            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: '⚠️ DeepOrbit encountered an internal error.' });
+        } catch (slackError) { console.error("[Slack Error] Failed post LLM error msg:", slackError.data?.error || slackError.message); }
     } finally {
         // Clean up the thinking message
         if (thinkingMessageTs) {
-             try { await slack.chat.delete({ channel: channel, ts: thinkingMessageTs }); console.log(`[Handler] Deleted thinking message (ts: ${thinkingMessageTs}).`); }
-             catch (delErr) { console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message); }
+            try {
+                await slack.chat.delete({ channel: channel, ts: thinkingMessageTs });
+                console.log(`[Handler] Deleted thinking message (ts: ${thinkingMessageTs}).`);
+            } catch (delErr) { console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message); }
         }
         const handlerEndTime = Date.now();
         console.log(`[Handler] Finished processing event for ${userId}. Total duration: ${handlerEndTime - handlerStartTime}ms`);
@@ -385,7 +508,6 @@ async function handleSlackMessageEvent(event) {
 // --- Express App Setup ---
 // Events API listener *MUST* come before any body parsers that consume the raw body
 app.use('/slack/events', slackEvents.requestListener());
-
 
 // --- Interaction Endpoint ---
 // Apply urlencoded middleware specifically to this route for Slack interactions
@@ -412,7 +534,7 @@ app.post('/slack/interactions', express.urlencoded({ extended: true, limit: '1mb
             const feedbackValue = action.value;
             const userId = payload.user.id;
             const channelId = payload.channel.id;
-            const messageTs = payload.message.ts;
+            const messageTs = payload.message.ts; // Bot message TS
             const blockId = action.block_id;
 
             let originalQuestionTs = null;
@@ -425,29 +547,50 @@ app.post('/slack/interactions', express.urlencoded({ extended: true, limit: '1mb
 
             console.log(`[Interaction] User ${userId} clicked '${actionId}' (Value: ${feedbackValue}) on msg ${messageTs}. Original TS: ${originalQuestionTs}, Response Sphere: ${responseSphere}`);
 
+            // Fetch Original User Message Text
+            let originalQuestionText = null;
+            if (originalQuestionTs && channelId) {
+                try {
+                    console.log(`[Interaction] Fetching original message text for ts: ${originalQuestionTs}`);
+                    const historyResult = await slack.conversations.history({
+                        channel: channelId,
+                        latest: originalQuestionTs,
+                        oldest: originalQuestionTs, // Fetch just this one message
+                        inclusive: true,
+                        limit: 1
+                    });
+                    if (historyResult.ok && historyResult.messages && historyResult.messages.length > 0) {
+                        originalQuestionText = historyResult.messages[0].text;
+                        console.log(`[Interaction] Found original message text.`);
+                    } else { console.warn(`[Interaction] Could not find original message for ts ${originalQuestionTs}. Error: ${historyResult.error}`); }
+                } catch (historyError) { console.error(`[Interaction] Error fetching original message text:`, historyError); }
+            } else { console.warn(`[Interaction] Missing context to fetch original question text.`); }
+
             // Store the feedback
             await storeFeedback({
                 feedback_ts: new Date().toISOString(), feedback_value: feedbackValue,
                 user_id: userId, channel_id: channelId, bot_message_ts: messageTs,
                 original_user_message_ts: originalQuestionTs, action_id: actionId,
                 sphere_slug: responseSphere, // Include sphere slug
-                bot_message_text: payload.message?.blocks?.[0]?.text?.text
+                bot_message_text: payload.message?.blocks?.[0]?.text?.text, // Include bot response text
+                original_user_message_text: originalQuestionText // Include user question text
             });
 
             // Optional: Update the original message to show feedback was received
             try {
                 await slack.chat.update({
                     channel: channelId, ts: messageTs,
-                    text: payload.message.text + "\n\n_🙏 Thanks for the feedback!_",
+                    text: payload.message.text + "\n\n_🙏 Thanks for the feedback!_", // Update fallback
                     blocks: [
                          payload.message.blocks[0], // Original text block
                          { "type": "context", "elements": [ { "type": "mrkdwn", "text": `_🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
                     ]
                 });
                  console.log(`[Interaction] Updated original message ${messageTs}.`);
-            } catch (updateError) { console.warn("Failed update msg after feedback:", updateError.data?.error || updateError.message); }
+            } catch (updateError) { console.warn("Failed update message after feedback:", updateError.data?.error || updateError.message); }
 
-        } else { console.log("[Interaction] Received unhandled interaction type:", payload.type); }
+        } else if (payload.type === 'view_submission') { console.log("[Interaction] Received view submission"); }
+        else { console.log("[Interaction] Received unhandled interaction type:", payload.type); }
     } catch (error) { console.error("[Interaction Handling Error]", error); }
 });
 
@@ -471,7 +614,7 @@ slackEvents.on('message', async (event, body) => {
     if (isDM || wasMentioned) {
         console.log(`[Processing Event] ID: ${eventId}, User: ${messageUserId}, Channel: ${channelId}, isDM: ${isDM}, Mentioned: ${wasMentioned}`);
         handleSlackMessageEvent(event).catch(err => { console.error("[Unhandled Handler Error] Event ID:", eventId, err); });
-    } else { return; } // Ignore other channel messages
+    } else { return; }
 });
 
 slackEvents.on('error', (error) => {

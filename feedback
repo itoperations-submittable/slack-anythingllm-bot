@@ -1,0 +1,42 @@
+CREATE TABLE feedback (
+    id SERIAL PRIMARY KEY,                     -- Auto-incrementing ID
+    feedback_ts TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Timestamp when feedback was recorded
+    feedback_value VARCHAR(10) NOT NULL,      -- 'bad', 'ok', 'great'
+    user_id VARCHAR(50) NOT NULL,             -- Slack User ID who gave feedback
+    channel_id VARCHAR(50) NOT NULL,          -- Slack Channel/DM ID
+    bot_message_ts VARCHAR(50) NOT NULL,      -- Timestamp of the bot message being rated
+    original_user_message_ts VARCHAR(50),    -- Timestamp of user msg that triggered bot msg (nullable if extraction failed)
+    action_id VARCHAR(255) NOT NULL,          -- Specific button action ID (e.g., 'feedback_bad')
+    sphere_slug VARCHAR(255),                 -- Knowledge Sphere used for the bot's response (IMPORTANT context)
+    bot_message_text TEXT                     -- Optional: Store the actual text of the bot's message
+);
+-- Optional: Add indexes for faster querying later, e.g., on feedback_ts or sphere_slug
+CREATE INDEX idx_feedback_ts ON feedback (feedback_ts);
+CREATE INDEX idx_feedback_sphere ON feedback (sphere_slug);
+show tables;
+show
+list
+SELECT * FROM pg_catalog.pg_tables;
+\h
+SHOW 
+SHOW TABLE 
+SHOW table feedback
+describe table feedback
+use database feedback_bcxw;
+use datbase feedback_bcxw;
+SHOW TABLES ;
+SHOW 
+;
+USE feedback_bcxw;
+/?
+\?
+\LIST
+\lidt
+\?
+\dt
+\d feedback
+\?
+SELECT * FROM feedback;
+\?
+\h SELECT * FROM feedback;
+\s feedback
