@@ -247,9 +247,9 @@ async function handleSlackMessageEventInternal(event) {
                     const chunk = messageChunks[j];
                     const isLastChunkOfLastSegment = isLastSegment && (j === messageChunks.length - 1);
                     
-                    // *** MODIFIED: Use regex to catch literal \\n as well ***
-                    let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(?:\\s|\\n|\\\\n)+$/, '') : chunk;
-                    if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
+                    // *** Apply trim directly to the final text chunk before sending ***
+                    let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(\\\n|\s)+$/, '') : chunk;
+                    if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue; // Skip potentially empty intermediate chunks
                     
                     let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
@@ -326,9 +326,9 @@ async function handleSlackMessageEventInternal(event) {
                         const chunk = codeChunks[j];
                         const isLastChunkOfLastSegment = isLastSegment && (j === codeChunks.length - 1);
                         
-                        // *** MODIFIED: Use regex to catch literal \\n as well ***
-                        let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(?:\\s|\\n|\\\\n)+$/, '') : chunk;
-                        if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
+                        // *** Apply trim directly to the final inline code chunk before sending ***
+                        let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(\\\n|\s)+$/, '') : chunk;
+                        if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue; // Skip potentially empty intermediate chunks
                         
                         let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
