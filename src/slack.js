@@ -259,59 +259,24 @@ async function handleSlackMessageEventInternal(event) {
         for (let i = 0; i < segments.length; i++) {
             const segment = segments[i];
             const isLastSegment = i === segments.length - 1;
+            let currentBlocks = [];
+            let fallbackText = '';
 
             if (segment.type === 'text') {
                 // --- Handle Text Segments ---
-                const formattedText = formatSlackMessage(segment.content);
-                if (!formattedText || formattedText.trim().length === 0) continue;
+                if (!segment.content || segment.content.trim().length === 0) continue;
                 
-                const messageChunks = splitMessageIntoChunks(formattedText, MAX_SLACK_BLOCK_TEXT_LENGTH);
-                for (let j = 0; j < messageChunks.length; j++) {
-                    const chunk = messageChunks[j];
-                    const isLastChunkOfLastSegment = isLastSegment && (j === messageChunks.length - 1);
-                    
-                    // *** Apply trim directly to the final text chunk before sending ***
-                    let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(\\\n|\s)+$/, '') : chunk;
-                    if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue; // Skip potentially empty intermediate chunks
-                    
-                    // Remove all escaped newlines from the text before setting it in blocks
-                    textToSend = textToSend.replace(/\\n/g, '');
-                    
-                    // Use rich_text blocks for all content types to ensure full width display
-                    console.log(`[Slack Handler DEBUG] Converting to rich_text block format`);
-                    
-                    // Create rich text block
-                    const richTextBlock = markdownToRichTextBlock(textToSend, `msg_${Date.now()}_${j}`);
-                    let currentBlocks = [richTextBlock];
-
-                    if (isLastChunkOfLastSegment && isSubstantiveResponse) {
-                        // *** ADDED: Log entering feedback block ***
-                        console.log("[Slack Handler DEBUG] Adding feedback buttons to text chunk.");
-                        console.log("[Slack Handler] Adding feedback buttons to final text chunk.");
-                        currentBlocks = currentBlocks.concat(feedbackBlock);
-                    }
-
-                    try {
-                        // Use a trimmed version for the fallback text parameter
-                        const fallbackText = textToSend.replace(/(\\\n|\s)+$/, '').trim();
-                        
-                        // Add explicit length logging to debug truncation issues
-                        console.log(`[Slack Handler LENGTH DEBUG] Sending message chunk with length: ${textToSend.length} chars`);
-                        const isCodeContent = textToSend.includes('```');
-                        const applicableThreshold = isCodeContent ? MAX_SLACK_BLOCK_CODE_LENGTH : MAX_SLACK_BLOCK_TEXT_LENGTH;
-                        if (textToSend.length > applicableThreshold) {
-                            console.warn(`[Slack Handler WARNING] Message chunk exceeds ${isCodeContent ? "code" : "text"} threshold (${applicableThreshold}): ${textToSend.length} chars`);
-                        }
-                        
-                        console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
-                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: currentBlocks });
-                        console.log(`[Slack Handler] Posted text chunk ${j + 1}/${messageChunks.length}.`);
-                    } catch (postError) {
-                        console.error(`[Slack Error] Failed post text chunk ${j + 1}:`, postError.data?.error || postError.message);
-                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${j + 1} of the response)_` }).catch(() => {});
-                        break;
-                    }
+                console.log(`[Slack Handler DEBUG] Converting text segment to rich_text block format`);
+                const richTextBlock = markdownToRichTextBlock(segment.content, `msg_${Date.now()}_${i}`);
+                if (richTextBlock) {
+                     currentBlocks.push(richTextBlock);
+                     // Generate simple fallback text
+                     fallbackText = segment.content.replace(/\*\*|_|_|`|\[.*?\]\(.*?\)/g, '').substring(0, 200);
+                } else {
+                    console.warn(`[Slack Handler] Failed to generate rich text block for text segment ${i}`);
+                    continue; // Skip if block generation failed
                 }
+
             } else if (segment.type === 'code') {
                 // --- Handle Code Segments ---
                 const language = segment.language || 'text';
@@ -333,89 +298,75 @@ async function handleSlackMessageEventInternal(event) {
                         });
                         console.log(`[Slack Handler] Posted JSON snippet.`);
 
-                        // Add feedback buttons *after* the file upload if it's the last segment
                         if (isLastSegment && isSubstantiveResponse) {
-                            // *** ADDED: Log entering feedback block ***
-                            console.log("[Slack Handler DEBUG] Adding feedback buttons after JSON file.");
-                            console.log("[Slack Handler] Adding feedback buttons after final JSON snippet.");
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
+                             console.log("[Slack Handler DEBUG] Adding feedback buttons after JSON file.");
+                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
                         }
+                        continue; // Skip the rest of the loop for JSON uploads
                     } catch (uploadError) {
                         console.error(`[Slack Error] Failed upload JSON snippet:`, uploadError.data?.error || uploadError.message);
                         // Fallback: Post raw code if upload fails
-                        const fallbackText = `⚠️ Failed to upload JSON snippet. Raw content:\`\`\`json\n${segment.content}\`\`\``;
-                        const fallbackChunks = splitMessageIntoChunks(fallbackText, MAX_SLACK_BLOCK_TEXT_LENGTH);
+                        fallbackText = `⚠️ Failed to upload JSON snippet. Raw content:\`\`\`json\n${segment.content}\`\`\``;
+                        const fallbackChunks = splitMessageIntoChunks(fallbackText, MAX_SLACK_BLOCK_TEXT_LENGTH); // Use chunker ONLY for fallback
                         for(const fallbackChunk of fallbackChunks) {
-                            // Use a trimmed version of the fallback chunk and remove all escaped newlines
-                            let trimmedFallbackChunk = fallbackChunk.replace(/(\\\n|\s)+$/, '').trim();
-                            trimmedFallbackChunk = trimmedFallbackChunk.replace(/\\n/g, '');
+                            let trimmedFallbackChunk = fallbackChunk.replace(/(\\\n|\s)+$/, '').trim().replace(/\\n/g, '');
                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: trimmedFallbackChunk });
                         } 
-                        // Add feedback buttons *after* the fallback post if it was the last segment
                         if (isLastSegment && isSubstantiveResponse) {
-                            // *** ADDED: Log entering feedback block ***
                             console.log("[Slack Handler DEBUG] Adding feedback buttons after JSON fallback.");
-                            console.log("[Slack Handler] Adding feedback buttons after JSON upload fallback.");
                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
                         }
+                        continue; // Skip the rest of the loop after fallback
                     }
                 } else {
                     // --- Format Other Code Blocks Inline --- 
-                    // Reconstruct the markdown block string
-                    const inlineCodeContent = `\`\`\`${language}\n${segment.content}\`\`\``;
+                    if (!segment.content || segment.content.trim().length === 0) continue;
                     
-                    // Now, split this potentially large code block using the updated splitMessageIntoChunks
-                    const codeChunks = splitMessageIntoChunks(inlineCodeContent, MAX_SLACK_BLOCK_CODE_LENGTH);
-                    if (!codeChunks || codeChunks.length === 0) continue;
-
-                    // Loop through each chunk (which might be the entire block or parts of a very large one)
-                    for (let j = 0; j < codeChunks.length; j++) {
-                        const chunk = codeChunks[j];
-                        const isLastChunkOfLastSegment = isLastSegment && (j === codeChunks.length - 1);
-                        
-                        // *** Apply trim directly to the final inline code chunk before sending ***
-                        let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(\\\n|\s)+$/, '') : chunk;
-                        if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue; // Skip potentially empty intermediate chunks
-                        
-                        // Remove all escaped newlines from the code before setting it in blocks
-                        textToSend = textToSend.replace(/\\n/g, '');
-                        
-                        // Use rich_text blocks for all content types to ensure full width display
-                        console.log(`[Slack Handler DEBUG] Converting to rich_text block format for code chunk`);
-                        
-                        // Create rich text block for this code chunk
-                        const richTextBlock = markdownToRichTextBlock(textToSend, `code_${Date.now()}_${j}`);
-                        let currentBlocks = richTextBlock ? [richTextBlock] : [];
-
-                        if (isLastChunkOfLastSegment && isSubstantiveResponse) {
-                            // *** ADDED: Log entering feedback block ***
-                            console.log("[Slack Handler DEBUG] Adding feedback buttons to inline code chunk.");
-                            console.log("[Slack Handler] Adding feedback buttons to final inline code chunk.");
-                            currentBlocks = currentBlocks.concat(feedbackBlock);
-                        }
-
-                        try {
-                            // Use a trimmed version for the fallback text parameter
-                            const fallbackText = textToSend.replace(/(\\\n|\s)+$/, '').trim();
-                            
-                            // Add explicit length logging to debug truncation issues
-                            console.log(`[Slack Handler LENGTH DEBUG] Sending message chunk with length: ${textToSend.length} chars`);
-                            const isCodeContent = textToSend.includes('```'); // This should always be true here
-                            const applicableThreshold = MAX_SLACK_BLOCK_CODE_LENGTH;
-                            if (textToSend.length > applicableThreshold) {
-                                console.warn(`[Slack Handler WARNING] Message chunk exceeds code threshold (${applicableThreshold}): ${textToSend.length} chars`);
-                            }
-                            
-                            console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: currentBlocks });
-                            console.log(`[Slack Handler] Posted inline code chunk ${j + 1}/${codeChunks.length}.`);
-                        } catch (postError) {
-                            console.error(`[Slack Error] Failed post inline code chunk ${j + 1}:`, postError.data?.error || postError.message);
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${j + 1} of the response)_` }).catch(()=>{});
-                            break;
-                        }
+                    // Reconstruct the markdown block string for the *entire* code segment
+                    const inlineCodeContent = `\`\`\`${language}\n${segment.content}\`\`\``;
+                    console.log(`[Slack Handler DEBUG] Converting code segment (${language}) to rich_text block format`);
+                    
+                    // Convert the entire code segment to a rich text block
+                    const richTextBlock = markdownToRichTextBlock(inlineCodeContent, `code_${Date.now()}_${i}`);
+                    if (richTextBlock) {
+                        currentBlocks.push(richTextBlock);
+                        // Generate simple fallback text for code
+                        fallbackText = `Code Snippet (${language})`;
+                    } else {
+                         console.warn(`[Slack Handler] Failed to generate rich text block for code segment ${i}`);
+                         continue; // Skip if block generation failed
                     }
                 }
+            }
+            
+            // If no blocks were generated for this segment, skip
+            if (currentBlocks.length === 0) {
+                 console.log(`[Slack Handler] No blocks generated for segment ${i}, skipping post.`);
+                 continue;
+            }
+
+            // Add feedback buttons if it's the last segment and response is substantive
+            if (isLastSegment && isSubstantiveResponse) {
+                console.log("[Slack Handler DEBUG] Adding feedback buttons to final segment.");
+                currentBlocks = currentBlocks.concat(feedbackBlock);
+            }
+
+            // Post the message for the current segment
+            try {
+                // Add explicit length logging (less critical now, but can keep for debugging)
+                const blockLength = JSON.stringify(currentBlocks).length;
+                console.log(`[Slack Handler LENGTH DEBUG] Sending segment ${i+1}/${segments.length} with block length: ${blockLength} chars`);
+                 if (blockLength > 50 * 1000) { // Arbitrary large limit check for block payload size
+                      console.warn(`[Slack Handler WARNING] Block payload size might be large: ${blockLength} chars`);
+                 }
+                
+                console.log(`[Slack Handler DEBUG] Fallback text for segment ${i+1}: "${fallbackText.substring(0, 50)}..."`);
+                await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: currentBlocks });
+                console.log(`[Slack Handler] Posted segment ${i + 1}/${segments.length}.`);
+            } catch (postError) {
+                console.error(`[Slack Error] Failed post segment ${i + 1}:`, postError.data?.error || postError.message);
+                // Attempt to post a generic error message for this segment
+                await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${i + 1} of the response)_` }).catch(()=>{});
             }
         }
         // -- End Segment Processing Loop --
