@@ -261,7 +261,10 @@ async function handleSlackMessageEventInternal(event) {
                     }
 
                     try {
-                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: textToSend, blocks: currentBlocks });
+                        // Use a trimmed version for the fallback text parameter
+                        const fallbackText = textToSend.replace(/(\\\n|\s)+$/, '').trim();
+                        console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
+                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: currentBlocks });
                         console.log(`[Slack Handler] Posted text chunk ${j + 1}/${messageChunks.length}.`);
                     } catch (postError) {
                         console.error(`[Slack Error] Failed post text chunk ${j + 1}:`, postError.data?.error || postError.message);
@@ -303,7 +306,9 @@ async function handleSlackMessageEventInternal(event) {
                         const fallbackText = `⚠️ Failed to upload JSON snippet. Raw content:\`\`\`json\n${segment.content}\`\`\``;
                         const fallbackChunks = splitMessageIntoChunks(fallbackText, MAX_SLACK_BLOCK_TEXT_LENGTH);
                         for(const fallbackChunk of fallbackChunks) {
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackChunk });
+                            // Use a trimmed version of the fallback chunk
+                            const trimmedFallbackChunk = fallbackChunk.replace(/(\\\n|\s)+$/, '').trim();
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: trimmedFallbackChunk });
                         } 
                         // Add feedback buttons *after* the fallback post if it was the last segment
                         if (isLastSegment && isSubstantiveResponse) {
@@ -340,7 +345,10 @@ async function handleSlackMessageEventInternal(event) {
                         }
 
                         try {
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: textToSend, blocks: currentBlocks });
+                            // Use a trimmed version for the fallback text parameter
+                            const fallbackText = textToSend.replace(/(\\\n|\s)+$/, '').trim();
+                            console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: currentBlocks });
                             console.log(`[Slack Handler] Posted inline code chunk ${j + 1}/${codeChunks.length}.`);
                         } catch (postError) {
                             console.error(`[Slack Error] Failed post inline code chunk ${j + 1}:`, postError.data?.error || postError.message);
