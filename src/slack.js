@@ -211,9 +211,15 @@ async function handleSlackMessageEventInternal(event) {
 
         // --- End Sphere Determination ---
 
-        // 6. Update Thinking Message with Sphere
+        // 6. Update Thinking Message with Sphere (if not default 'all')
         try {
-            await slack.chat.update({ channel, ts: thinkingMessageTs, text: `:hourglass_flowing_sand: Thinking in sphere [${sphere}]...` });
+            let thinkingText = ":hourglass_flowing_sand: Thinking";
+            if (sphere !== 'all') {
+                thinkingText += ` in sphere [${sphere}]`;
+            }
+            thinkingText += "...";
+            await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
+            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: "${thinkingText}"`);
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
 
         // 7. Construct Final LLM Input (No history included by default now)
@@ -302,7 +308,7 @@ export async function handleSlackEvent(event, body) {
     if ( subtype === 'bot_message' || subtype === 'message_deleted' || subtype === 'message_changed' ||
          subtype === 'channel_join' || subtype === 'channel_leave' || subtype === 'thread_broadcast' ||
          !messageUserId || !text || messageUserId === botUserId ) {
-        return; // Ignore these events
+        return;
     }
 
     const isDM = channelId.startsWith('D');
@@ -311,12 +317,10 @@ export async function handleSlackEvent(event, body) {
 
     if (isDM || wasMentioned) {
         console.log(`[Slack Event Wrapper] Processing event ID: ${eventId}`);
-        // Don't await here, let it run in background
         handleSlackMessageEventInternal(event).catch(err => {
             console.error("[Slack Event Wrapper] Unhandled Handler Error, Event ID:", eventId, err);
         });
     } else {
-        // Ignore other channel messages
         return;
     }
 }
@@ -330,7 +334,7 @@ export async function handleInteraction(req, res) {
         payload = JSON.parse(req.body.payload);
     } catch (e) { console.error("Failed parse interaction payload:", e); return res.status(400).send(); }
 
-    res.send(); // ACK immediately
+    res.send();
 
     try {
         console.log("[Interaction Handler] Received type:", payload.type);
@@ -357,7 +361,7 @@ export async function handleInteraction(req, res) {
                      try {
                          const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
                          if (historyResult.ok && historyResult.messages?.[0]) { originalQuestionText = historyResult.messages[0].text; }
-                     } catch (historyError) { console.error(`[Interaction] Error fetch original msg:`, historyError); }
+                     } catch (historyError) { console.error('[Interaction] Error fetch original msg:', historyError); }
                  }
 
                  await storeFeedback({
@@ -370,8 +374,8 @@ export async function handleInteraction(req, res) {
                  try {
                      await slack.chat.update({
                          channel: channelId, ts: messageTs,
-                         text: payload.message.text + "\n\n_🙏 Thanks!_",
-                         blocks: [ payload.message.blocks[0], { "type": "context", "elements": [ { "type": "mrkdwn", "text": `_🙏 Thanks! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] } ]
+                         text: payload.message.text + "\n\n🙏 Thanks!",
+                         blocks: [ payload.message.blocks[0], { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] } ]
                      });
                  } catch (updateError) { console.warn("Failed update feedback msg:", updateError.data?.error || updateError.message); }
             }
