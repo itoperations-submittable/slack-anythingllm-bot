@@ -363,11 +363,12 @@ async function handleSlackMessageEventInternal(event) {
                     // --- Format Other Code Blocks Inline --- 
                     // Reconstruct the markdown block string
                     const inlineCodeContent = `\`\`\`${language}\n${segment.content}\`\`\``;
-                    // Use the simple text formatter (it should handle code blocks okay now)
-                    const formattedCode = formatSlackMessage(inlineCodeContent); 
-                    if (!formattedCode || formattedCode.trim().length === 0) continue;
+                    
+                    // Now, split this potentially large code block using the updated splitMessageIntoChunks
+                    const codeChunks = splitMessageIntoChunks(inlineCodeContent, MAX_SLACK_BLOCK_CODE_LENGTH);
+                    if (!codeChunks || codeChunks.length === 0) continue;
 
-                    const codeChunks = splitMessageIntoChunks(formattedCode, MAX_SLACK_BLOCK_TEXT_LENGTH);
+                    // Loop through each chunk (which might be the entire block or parts of a very large one)
                     for (let j = 0; j < codeChunks.length; j++) {
                         const chunk = codeChunks[j];
                         const isLastChunkOfLastSegment = isLastSegment && (j === codeChunks.length - 1);
@@ -380,11 +381,11 @@ async function handleSlackMessageEventInternal(event) {
                         textToSend = textToSend.replace(/\\n/g, '');
                         
                         // Use rich_text blocks for all content types to ensure full width display
-                        console.log(`[Slack Handler DEBUG] Converting to rich_text block format`);
+                        console.log(`[Slack Handler DEBUG] Converting to rich_text block format for code chunk`);
                         
-                        // Create rich text block
+                        // Create rich text block for this code chunk
                         const richTextBlock = markdownToRichTextBlock(textToSend, `code_${Date.now()}_${j}`);
-                        let currentBlocks = [richTextBlock];
+                        let currentBlocks = richTextBlock ? [richTextBlock] : [];
 
                         if (isLastChunkOfLastSegment && isSubstantiveResponse) {
                             // *** ADDED: Log entering feedback block ***
@@ -399,10 +400,10 @@ async function handleSlackMessageEventInternal(event) {
                             
                             // Add explicit length logging to debug truncation issues
                             console.log(`[Slack Handler LENGTH DEBUG] Sending message chunk with length: ${textToSend.length} chars`);
-                            const isCodeContent = textToSend.includes('```');
-                            const applicableThreshold = isCodeContent ? MAX_SLACK_BLOCK_CODE_LENGTH : MAX_SLACK_BLOCK_TEXT_LENGTH;
+                            const isCodeContent = textToSend.includes('```'); // This should always be true here
+                            const applicableThreshold = MAX_SLACK_BLOCK_CODE_LENGTH;
                             if (textToSend.length > applicableThreshold) {
-                                console.warn(`[Slack Handler WARNING] Message chunk exceeds ${isCodeContent ? "code" : "text"} threshold (${applicableThreshold}): ${textToSend.length} chars`);
+                                console.warn(`[Slack Handler WARNING] Message chunk exceeds code threshold (${applicableThreshold}): ${textToSend.length} chars`);
                             }
                             
                             console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
