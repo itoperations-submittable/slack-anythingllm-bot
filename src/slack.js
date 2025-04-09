@@ -277,12 +277,11 @@ async function handleSlackMessageEventInternal(event) {
                     // Remove all escaped newlines from the text before setting it in blocks
                     textToSend = textToSend.replace(/\\n/g, '');
                     
-                    // Modified to force full width layout using fields
+                    // Use a simpler block structure with unique block_id
                     let currentBlocks = [{ 
                         "type": "section", 
                         "text": { "type": "mrkdwn", "text": textToSend },
-                        "block_id": `message_${Date.now()}_${j}`,
-                        "fields": [] // Adding empty fields forces full width layout
+                        "block_id": `message_${Date.now()}_${j}`
                     }];
 
                     if (isLastChunkOfLastSegment && isSubstantiveResponse) {
@@ -380,12 +379,11 @@ async function handleSlackMessageEventInternal(event) {
                         // Remove all escaped newlines from the code before setting it in blocks
                         textToSend = textToSend.replace(/\\n/g, '');
                         
-                        // Modified to force full width layout using fields
+                        // Use a simpler block structure with unique block_id
                         let currentBlocks = [{ 
                             "type": "section", 
                             "text": { "type": "mrkdwn", "text": textToSend },
-                            "block_id": `code_${Date.now()}_${j}`,
-                            "fields": [] // Adding empty fields forces full width layout
+                            "block_id": `code_${Date.now()}_${j}`
                         }];
 
                         if (isLastChunkOfLastSegment && isSubstantiveResponse) {
