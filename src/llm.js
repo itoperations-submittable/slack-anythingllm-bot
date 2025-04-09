@@ -139,11 +139,11 @@ export async function decideSphere(userQuestion, conversationHistory = "") {
 
 // --- Main LLM Chat Function (Non-Streaming) ---
 export async function queryLlm(sphere, inputText, sessionId) {
-    console.log(`[LLM Service/queryLlm] Querying sphere: ${sphere}`);
+    console.log(`[LLM Service/queryLlm] Querying sphere: ${sphere} with mode: query`);
     try {
         const llmResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`, {
             message: inputText,
-            mode: 'chat',
+            mode: 'query',
             sessionId: sessionId,
         }, {
             headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
