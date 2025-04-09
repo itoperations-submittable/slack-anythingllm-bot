@@ -233,6 +233,26 @@ async function handleSlackMessageEventInternal(event) {
                 const filename = `response-${Date.now()}.md`;
                 const title = `Response to: ${cleanedQuery.substring(0, 50)}${cleanedQuery.length > 50 ? '...' : ''}`;
                 
+                // Collection of witty comments for long responses
+                const fileAttachmentMessages = [
+                    "📄 *Your response is quite detailed, so I've attached it as a file:*",
+                    "📚 *This answer is longer than War and Peace, so here's a file instead:*",
+                    "📝 *I wrote you a novel! It's attached as a file:*",
+                    "📋 *This response would break the scroll wheel on your mouse, so I've made it a file:*",
+                    "📎 *Clippy would be proud of this attachment! Your detailed answer awaits:*",
+                    "📦 *I packed this big response into a tidy file for you:*",
+                    "🗂️ *That was a big question! Here's a file with the even bigger answer:*",
+                    "📔 *This response is longer than my last company meeting. Enjoy it as a file:*",
+                    "📜 *Behold! A scroll of knowledge (aka a file attachment):*",
+                    "🧠 *Brain dump complete! Contents saved to file for your reading pleasure:*",
+                    "📝 *I would have sent this as a message, but Slack said 'whoa there, partner!' File attached:*",
+                    "📤 *This response is so big it needed its own zip code. Here's a file instead:*",
+                    "📬 *Special delivery! One comprehensive answer, file format:*"
+                ];
+                
+                // Select a random message
+                const initialComment = fileAttachmentMessages[Math.floor(Math.random() * fileAttachmentMessages.length)];
+                
                 await slack.files.uploadV2({
                     channel_id: channel,
                     thread_ts: replyTarget,
@@ -240,7 +260,7 @@ async function handleSlackMessageEventInternal(event) {
                     filename: filename,
                     filetype: 'markdown',
                     title: title,
-                    initial_comment: `📄 *Your response is quite detailed, so I've attached it as a file:*` 
+                    initial_comment: initialComment
                 });
                 
                 console.log(`[Slack Handler] Posted long response as a markdown file: ${filename}`);
