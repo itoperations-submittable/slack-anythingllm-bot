@@ -247,8 +247,8 @@ async function handleSlackMessageEventInternal(event) {
                     const chunk = messageChunks[j];
                     const isLastChunkOfLastSegment = isLastSegment && (j === messageChunks.length - 1);
                     
-                    // *** MODIFIED: Use trimEnd() for final chunk ***
-                    let textToSend = isLastChunkOfLastSegment ? chunk.trimEnd() : chunk;
+                    // *** MODIFIED: Use replace(/\s+$/, '') for final chunk ***
+                    let textToSend = isLastChunkOfLastSegment ? chunk.replace(/[\s\n]+$/, '') : chunk;
                     if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
                     
                     let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
@@ -326,8 +326,8 @@ async function handleSlackMessageEventInternal(event) {
                         const chunk = codeChunks[j];
                         const isLastChunkOfLastSegment = isLastSegment && (j === codeChunks.length - 1);
                         
-                        // *** MODIFIED: Use trimEnd() for final chunk ***
-                        let textToSend = isLastChunkOfLastSegment ? chunk.trimEnd() : chunk;
+                        // *** MODIFIED: Use replace(/\s+$/, '') for final chunk ***
+                        let textToSend = isLastChunkOfLastSegment ? chunk.replace(/[\s\n]+$/, '') : chunk;
                         if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
                         
                         let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
