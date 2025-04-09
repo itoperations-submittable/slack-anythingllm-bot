@@ -408,6 +408,10 @@ export function getSlackFiletype(language) {
 export function formatSlackMessage(textSegment) {
      if (!textSegment) return '';
 
+     // Log the input to see if code blocks are present
+     const hasCodeBlock = textSegment.includes('```');
+     console.log(`[Utils/formatSlackMessage] Input has code block: ${hasCodeBlock}, Length: ${textSegment.length}, First 30 chars: "${textSegment.substring(0, 30)}..."`);
+
      try {
          // STEP 1: Pre-process to remove language identifiers from code blocks
          // This helps slackify-markdown to properly handle code blocks
@@ -424,7 +428,9 @@ export function formatSlackMessage(textSegment) {
          processedText = processedText.replace(/\\\\n/g, '');
 
          // Convert the pre-processed Markdown text to Slack mrkdwn 
-         return slackifyMarkdown(processedText);
+         const result = slackifyMarkdown(processedText);
+         console.log(`[Utils/formatSlackMessage] Output after processing, Length: ${result.length}, First 30 chars: "${result.substring(0, 30)}..."`);
+         return result;
      } catch (conversionError) {
          console.error("[Utils] Error converting text segment with slackify-markdown, using original:", conversionError);
          // Fallback to the original text if slackify fails

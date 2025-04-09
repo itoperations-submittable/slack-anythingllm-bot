@@ -279,6 +279,8 @@ async function handleSlackMessageEventInternal(event) {
                     
                     // Check if this is a code block
                     const isCodeBlock = textToSend.includes('```');
+                    console.log(`[Slack Handler DEBUG] Text chunk contains code block: ${isCodeBlock}, Text starts with: "${textToSend.substring(0, 20)}..."`);
+                    
                     let currentBlocks;
                     
                     if (isCodeBlock) {
@@ -287,6 +289,7 @@ async function handleSlackMessageEventInternal(event) {
                         const codeMatch = textToSend.match(/```(?:\w+)?\n([\s\S]*?)```/);
                         const codeContent = codeMatch ? codeMatch[1] : textToSend;
                         
+                        console.log(`[Slack Handler DEBUG] Using rich_text block for code content.`);
                         currentBlocks = [{
                             "type": "rich_text",
                             "block_id": `code_${Date.now()}_${j}`,
@@ -300,6 +303,7 @@ async function handleSlackMessageEventInternal(event) {
                         }];
                     } else {
                         // For regular text, use section with mrkdwn to preserve formatting
+                        console.log(`[Slack Handler DEBUG] Using section block for regular text.`);
                         currentBlocks = [{ 
                             "type": "section", 
                             "text": { "type": "mrkdwn", "text": textToSend }
@@ -403,6 +407,8 @@ async function handleSlackMessageEventInternal(event) {
                         
                         // Check if this is a code block
                         const isCodeBlock = textToSend.includes('```');
+                        console.log(`[Slack Handler DEBUG] Text chunk contains code block: ${isCodeBlock}, Text starts with: "${textToSend.substring(0, 20)}..."`);
+                        
                         let currentBlocks;
                         
                         if (isCodeBlock) {
@@ -411,6 +417,7 @@ async function handleSlackMessageEventInternal(event) {
                             const codeMatch = textToSend.match(/```(?:\w+)?\n([\s\S]*?)```/);
                             const codeContent = codeMatch ? codeMatch[1] : textToSend;
                             
+                            console.log(`[Slack Handler DEBUG] Using rich_text block for code content.`);
                             currentBlocks = [{
                                 "type": "rich_text",
                                 "block_id": `code_${Date.now()}_${j}`,
@@ -424,6 +431,7 @@ async function handleSlackMessageEventInternal(event) {
                             }];
                         } else {
                             // For regular text, use section with mrkdwn to preserve formatting
+                            console.log(`[Slack Handler DEBUG] Using section block for regular text.`);
                             currentBlocks = [{ 
                                 "type": "section", 
                                 "text": { "type": "mrkdwn", "text": textToSend }
