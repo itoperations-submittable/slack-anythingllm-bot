@@ -10,6 +10,7 @@ import {
     THREAD_WORKSPACE_TTL,
     WORKSPACE_OVERRIDE_COMMAND_PREFIX,
     MAX_SLACK_BLOCK_TEXT_LENGTH,
+    LONG_RESPONSE_THRESHOLD,
     RESET_CONVERSATION_COMMAND,
     databaseUrl,
     redisUrl
@@ -192,7 +193,7 @@ async function handleSlackMessageEventInternal(event) {
         if (!rawReply) throw new Error('LLM returned empty response.');
         console.log("[Slack Handler Debug] Raw LLM Reply:\n", rawReply);
 
-        // 10. Process and Send Response Segments (Upload JSON, Inline Other Code)
+        // 10. Process and Send Response
 
         // 10a. Check for Substantive Response
         let isSubstantiveResponse = true;
@@ -213,7 +214,58 @@ async function handleSlackMessageEventInternal(event) {
             }
         }
 
-        // 10b. Extract Segments
+        // Define feedback blocks structure (avoids repetition)
+        const feedbackButtonElements = [
+            { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
+            { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
+            { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
+        ];
+        const feedbackBlock = [
+            { "type": "divider" },
+            { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`, "elements": feedbackButtonElements }
+        ];
+
+        // NEW: Check if the response is longer than the threshold for sending as a file
+        if (rawReply.length > LONG_RESPONSE_THRESHOLD) {
+            console.log(`[Slack Handler] Response length (${rawReply.length}) exceeds threshold (${LONG_RESPONSE_THRESHOLD}). Sending as file.`);
+            try {
+                // Upload the response as a markdown file
+                const filename = `response-${Date.now()}.md`;
+                const title = `Response to: ${cleanedQuery.substring(0, 50)}${cleanedQuery.length > 50 ? '...' : ''}`;
+                
+                await slack.files.uploadV2({
+                    channel_id: channel,
+                    thread_ts: replyTarget,
+                    content: rawReply,
+                    filename: filename,
+                    filetype: 'markdown',
+                    title: title,
+                    initial_comment: `📄 *Your response is quite detailed, so I've attached it as a file:*` 
+                });
+                
+                console.log(`[Slack Handler] Posted long response as a markdown file: ${filename}`);
+
+                // Add feedback after the file upload
+                if (isSubstantiveResponse) {
+                    await slack.chat.postMessage({ 
+                        channel, 
+                        thread_ts: replyTarget, 
+                        text: "How was this response?", 
+                        blocks: feedbackBlock 
+                    });
+                }
+                
+                // Return early since we've already handled the response
+                return;
+                
+            } catch (uploadError) {
+                console.error(`[Slack Error] Failed to upload response as file:`, uploadError.data?.error || uploadError.message);
+                console.log(`[Slack Handler] Falling back to normal message handling after file upload failure.`);
+                // Fall through to normal handling if the file upload fails
+            }
+        }
+
+        // 10b. Extract Segments (continue with normal processing if file upload isn't used or fails)
         const segments = extractTextAndCode(rawReply);
         console.log(`[Slack Handler] Extracted ${segments.length} segments (text/code). Substantive: ${isSubstantiveResponse}`);
 
@@ -225,17 +277,6 @@ async function handleSlackMessageEventInternal(event) {
         for (let i = 0; i < segments.length; i++) {
             const segment = segments[i];
             const isLastSegment = i === segments.length - 1;
-
-            // Define feedback blocks structure (avoids repetition)
-            const feedbackButtonElements = [
-                { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
-                { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
-                { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
-            ];
-            const feedbackBlock = [
-                { "type": "divider" },
-                { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`, "elements": feedbackButtonElements }
-            ];
 
             if (segment.type === 'text') {
                 // --- Handle Text Segments ---
@@ -313,7 +354,7 @@ async function handleSlackMessageEventInternal(event) {
                             let trimmedFallbackChunk = fallbackChunk.replace(/(\\\n|\s)+$/, '').trim();
                             trimmedFallbackChunk = trimmedFallbackChunk.replace(/\\n/g, '');
                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: trimmedFallbackChunk });
-                        }
+                        } 
                         // Add feedback buttons *after* the fallback post if it was the last segment
                         if (isLastSegment && isSubstantiveResponse) {
                             // *** ADDED: Log entering feedback block ***
