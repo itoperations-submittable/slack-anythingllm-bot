@@ -303,6 +303,7 @@ export async function handleSlackEvent(event, body) {
     if ( subtype === 'bot_message' || subtype === 'message_deleted' || subtype === 'message_changed' ||
          subtype === 'channel_join' || subtype === 'channel_leave' || subtype === 'thread_broadcast' ||
          !messageUserId || !text || messageUserId === botUserId ) {
+        // console.log(\"[Slack Event Wrapper] Ignoring event subtype:\", subtype || \'missing/invalid user/text\");
         return;
     }
 
@@ -310,8 +311,13 @@ export async function handleSlackEvent(event, body) {
     const mentionString = `<@${botUserId}>`;
     const wasMentioned = text.includes(mentionString);
 
+    // *** ADDED: Detailed logging before relevance check ***
+    console.log(`[Slack Event Wrapper DEBUG] Event ID: ${eventId}, Type: ${event.type}, Subtype: ${subtype}, User: ${messageUserId}, Channel: ${channelId}, IsDM: ${isDM}, MentionString: \"${mentionString}\", WasMentioned: ${wasMentioned}, Text: \"${text.substring(0, 100)}...\"`);
+
+    // Check if it's a relevant event (DM or Mention)
     if (isDM || wasMentioned) {
-        console.log(`[Slack Event Wrapper] Processing event ID: ${eventId}`);
+        console.log(`[Slack Event Wrapper] Processing relevant event ID: ${eventId}`);
+        // Run the internal handler asynchronously, don\'t block the event ACK
         handleSlackMessageEventInternal(event).catch(err => {
             console.error("[Slack Event Wrapper] Unhandled Handler Error, Event ID:", eventId, err);
         });
