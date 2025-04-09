@@ -10,6 +10,7 @@ import {
     THREAD_WORKSPACE_TTL,
     WORKSPACE_OVERRIDE_COMMAND_PREFIX,
     MAX_SLACK_BLOCK_TEXT_LENGTH,
+    MAX_SLACK_BLOCK_CODE_LENGTH,
     RESET_CONVERSATION_COMMAND,
     databaseUrl,
     redisUrl
@@ -281,8 +282,10 @@ async function handleSlackMessageEventInternal(event) {
                         
                         // Add explicit length logging to debug truncation issues
                         console.log(`[Slack Handler LENGTH DEBUG] Sending message chunk with length: ${textToSend.length} chars`);
-                        if (textToSend.length > MAX_SLACK_BLOCK_TEXT_LENGTH) {
-                            console.warn(`[Slack Handler WARNING] Message chunk exceeds MAX_SLACK_BLOCK_TEXT_LENGTH (${MAX_SLACK_BLOCK_TEXT_LENGTH}): ${textToSend.length} chars`);
+                        const isCodeContent = textToSend.includes('```');
+                        const applicableThreshold = isCodeContent ? MAX_SLACK_BLOCK_CODE_LENGTH : MAX_SLACK_BLOCK_TEXT_LENGTH;
+                        if (textToSend.length > applicableThreshold) {
+                            console.warn(`[Slack Handler WARNING] Message chunk exceeds ${isCodeContent ? "code" : "text"} threshold (${applicableThreshold}): ${textToSend.length} chars`);
                         }
                         
                         console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
@@ -376,8 +379,10 @@ async function handleSlackMessageEventInternal(event) {
                             
                             // Add explicit length logging to debug truncation issues
                             console.log(`[Slack Handler LENGTH DEBUG] Sending message chunk with length: ${textToSend.length} chars`);
-                            if (textToSend.length > MAX_SLACK_BLOCK_TEXT_LENGTH) {
-                                console.warn(`[Slack Handler WARNING] Message chunk exceeds MAX_SLACK_BLOCK_TEXT_LENGTH (${MAX_SLACK_BLOCK_TEXT_LENGTH}): ${textToSend.length} chars`);
+                            const isCodeContent = textToSend.includes('```');
+                            const applicableThreshold = isCodeContent ? MAX_SLACK_BLOCK_CODE_LENGTH : MAX_SLACK_BLOCK_TEXT_LENGTH;
+                            if (textToSend.length > applicableThreshold) {
+                                console.warn(`[Slack Handler WARNING] Message chunk exceeds ${isCodeContent ? "code" : "text"} threshold (${applicableThreshold}): ${textToSend.length} chars`);
                             }
                             
                             console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);

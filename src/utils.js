@@ -5,7 +5,9 @@ import {
 import {
     redisUrl, // Correct: Import URL from config
     DUPLICATE_EVENT_REDIS_PREFIX,
-    DUPLICATE_EVENT_TTL
+    DUPLICATE_EVENT_TTL,
+    MAX_SLACK_BLOCK_TEXT_LENGTH,
+    MAX_SLACK_BLOCK_CODE_LENGTH
 } from './config.js';
 
 // --- Event Deduplication ---
@@ -26,8 +28,14 @@ export async function isDuplicateRedis(eventId) {
 export function splitMessageIntoChunks(message, maxLength) {
     if (!message) return [''];
     
+    // Determine if this is a code block (starts with triple backticks)
+    const isCodeBlock = message.trim().startsWith('```');
+    
+    // Use appropriate threshold based on content type
+    const effectiveMaxLength = isCodeBlock ? MAX_SLACK_BLOCK_CODE_LENGTH : maxLength;
+    
     // If the message fits in one chunk, return it directly
-    if (message.length <= maxLength) {
+    if (message.length <= effectiveMaxLength) {
         return [message];
     }
     
@@ -61,7 +69,7 @@ export function splitMessageIntoChunks(message, maxLength) {
         }
     }
     
-    // If there are no code blocks, use paragraph-based splitting
+    // If there are no code blocks, use paragraph-based splitting with text threshold
     if (codeBlocks.length === 0) {
         return splitTextByLogicalBreaks(message, maxLength);
     }
@@ -74,13 +82,14 @@ export function splitMessageIntoChunks(message, maxLength) {
         const piece = allPieces[i];
         
         if (piece.type === 'text') {
-            // For text pieces, split by paragraphs if needed
+            // For text pieces, use the regular text threshold
+            const textMaxLength = MAX_SLACK_BLOCK_TEXT_LENGTH;
             const textToAdd = piece.content;
             
-            if (currentChunk.length + textToAdd.length <= maxLength) {
+            if (currentChunk.length + textToAdd.length <= textMaxLength) {
                 // Text fits in the current chunk
                 currentChunk += textToAdd;
-            } else if (textToAdd.length > maxLength) {
+            } else if (textToAdd.length > textMaxLength) {
                 // Text is too long for a single chunk, needs its own splitting
                 if (currentChunk) {
                     chunks.push(currentChunk);
@@ -88,7 +97,7 @@ export function splitMessageIntoChunks(message, maxLength) {
                 }
                 
                 // Split the large text by paragraphs and logical breaks
-                const textChunks = splitTextByLogicalBreaks(textToAdd, maxLength);
+                const textChunks = splitTextByLogicalBreaks(textToAdd, textMaxLength);
                 chunks.push(...textChunks.slice(0, -1));
                 currentChunk = textChunks[textChunks.length - 1] || '';
             } else {
@@ -97,10 +106,11 @@ export function splitMessageIntoChunks(message, maxLength) {
                 currentChunk = textToAdd;
             }
         } else if (piece.type === 'code') {
-            // For code blocks, try to keep them intact
+            // For code blocks, use the code threshold to preserve format
+            const codeMaxLength = MAX_SLACK_BLOCK_CODE_LENGTH;
             const codeBlock = codeBlocks[piece.index];
             
-            if (currentChunk.length + codeBlock.content.length <= maxLength) {
+            if (currentChunk.length + codeBlock.content.length <= codeMaxLength) {
                 // Code block fits in current chunk
                 currentChunk += codeBlock.content;
             } else {
@@ -109,12 +119,12 @@ export function splitMessageIntoChunks(message, maxLength) {
                     chunks.push(currentChunk);
                 }
                 
-                if (codeBlock.content.length <= maxLength) {
+                if (codeBlock.content.length <= codeMaxLength) {
                     // Code block fits in its own chunk
                     currentChunk = codeBlock.content;
                 } else {
                     // Code block is too large for a single chunk
-                    // We still keep it intact but as its own chunk
+                    // We still keep it intact to avoid breaking code
                     chunks.push(codeBlock.content);
                     currentChunk = '';
                 }
@@ -142,22 +152,38 @@ export function splitMessageIntoChunks(message, maxLength) {
             return chunk;
         });
         
-        // Final length check to ensure no chunk exceeds maxLength
-        // This is to catch any edge cases our logic might have missed
+        // Final length check but respect type-specific thresholds
         return numberedChunks.flatMap(chunk => {
-            if (chunk.length <= maxLength) {
+            const isChunkCode = chunk.trim().startsWith('```');
+            const chunkMaxLength = isChunkCode ? MAX_SLACK_BLOCK_CODE_LENGTH : MAX_SLACK_BLOCK_TEXT_LENGTH;
+            
+            if (chunk.length <= chunkMaxLength) {
+                return [chunk];
+            } else if (isChunkCode) {
+                // For code blocks, keep them intact even if they're long
+                console.log(`[Utils] Code block exceeds threshold (${chunk.length} > ${chunkMaxLength}), but keeping intact`);
                 return [chunk];
             } else {
-                console.warn(`[Utils] Post-process found a chunk exceeding maxLength (${chunk.length} > ${maxLength}), forcing split`);
-                return splitByCharCount(chunk, maxLength);
+                console.warn(`[Utils] Text chunk exceeds threshold (${chunk.length} > ${chunkMaxLength}), forcing split`);
+                return splitByCharCount(chunk, chunkMaxLength);
             }
         });
     }
     
-    // One last check before returning
-    return chunks.flatMap(chunk => 
-        chunk.length <= maxLength ? [chunk] : splitByCharCount(chunk, maxLength)
-    );
+    // One last check with type-specific thresholds
+    return chunks.flatMap(chunk => {
+        const isChunkCode = chunk.trim().startsWith('```');
+        const chunkMaxLength = isChunkCode ? MAX_SLACK_BLOCK_CODE_LENGTH : MAX_SLACK_BLOCK_TEXT_LENGTH;
+        
+        if (chunk.length <= chunkMaxLength) {
+            return [chunk];
+        } else if (isChunkCode) {
+            // For code blocks, keep them intact
+            return [chunk];
+        } else {
+            return splitByCharCount(chunk, chunkMaxLength);
+        }
+    });
 }
 
 /**
