@@ -251,6 +251,9 @@ async function handleSlackMessageEventInternal(event) {
                     let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(\\\n|\s)+$/, '') : chunk;
                     if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue; // Skip potentially empty intermediate chunks
                     
+                    // Remove all escaped newlines from the text before setting it in blocks
+                    textToSend = textToSend.replace(/\\n/g, '');
+                    
                     let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
                     if (isLastChunkOfLastSegment && isSubstantiveResponse) {
@@ -306,10 +309,11 @@ async function handleSlackMessageEventInternal(event) {
                         const fallbackText = `⚠️ Failed to upload JSON snippet. Raw content:\`\`\`json\n${segment.content}\`\`\``;
                         const fallbackChunks = splitMessageIntoChunks(fallbackText, MAX_SLACK_BLOCK_TEXT_LENGTH);
                         for(const fallbackChunk of fallbackChunks) {
-                            // Use a trimmed version of the fallback chunk
-                            const trimmedFallbackChunk = fallbackChunk.replace(/(\\\n|\s)+$/, '').trim();
+                            // Use a trimmed version of the fallback chunk and remove all escaped newlines
+                            let trimmedFallbackChunk = fallbackChunk.replace(/(\\\n|\s)+$/, '').trim();
+                            trimmedFallbackChunk = trimmedFallbackChunk.replace(/\\n/g, '');
                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: trimmedFallbackChunk });
-                        } 
+                        }
                         // Add feedback buttons *after* the fallback post if it was the last segment
                         if (isLastSegment && isSubstantiveResponse) {
                             // *** ADDED: Log entering feedback block ***
@@ -334,6 +338,9 @@ async function handleSlackMessageEventInternal(event) {
                         // *** Apply trim directly to the final inline code chunk before sending ***
                         let textToSend = isLastChunkOfLastSegment ? chunk.replace(/(\\\n|\s)+$/, '') : chunk;
                         if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue; // Skip potentially empty intermediate chunks
+                        
+                        // Remove all escaped newlines from the code before setting it in blocks
+                        textToSend = textToSend.replace(/\\n/g, '');
                         
                         let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
