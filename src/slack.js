@@ -253,7 +253,8 @@ async function handleSlackMessageEventInternal(event) {
                 // Select a random message
                 const initialComment = fileAttachmentMessages[Math.floor(Math.random() * fileAttachmentMessages.length)];
                 
-                await slack.files.uploadV2({
+                // First, upload the file
+                const fileUploadResult = await slack.files.uploadV2({
                     channel_id: channel,
                     thread_ts: replyTarget,
                     content: rawReply,
@@ -265,13 +266,46 @@ async function handleSlackMessageEventInternal(event) {
                 
                 console.log(`[Slack Handler] Posted long response as a markdown file: ${filename}`);
 
-                // Add feedback after the file upload
+                // Add feedback in a structured message immediately after the file
                 if (isSubstantiveResponse) {
+                    // Collection of witty feedback prompts
+                    const feedbackPrompts = [
+                        "Was this response helpful?",
+                        "How did I do with this answer?",
+                        "Did this file answer your question?",
+                        "Rate my file-making skills:",
+                        "Was this worth the download?",
+                        "Did I hit the mark with this response?",
+                        "Thumbs up or down for this file?",
+                        "Did this file deliver what you needed?",
+                        "Does this deserve a spot in your bookmarks?",
+                        "Did I nail it or fail it with this response?",
+                        "Verdict on this file response?",
+                        "How's my answering? Let me know:",
+                        "File feedback appreciated:"
+                    ];
+                    
+                    // Select a random feedback prompt
+                    const feedbackPrompt = feedbackPrompts[Math.floor(Math.random() * feedbackPrompts.length)];
+                    
+                    // Create a nicer looking feedback message with context
+                    const feedbackMessage = [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": feedbackPrompt
+                            }
+                        },
+                        { "type": "divider" },
+                        { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`, "elements": feedbackButtonElements }
+                    ];
+                    
                     await slack.chat.postMessage({ 
                         channel, 
                         thread_ts: replyTarget, 
-                        text: "How was this response?", 
-                        blocks: feedbackBlock 
+                        text: feedbackPrompt, 
+                        blocks: feedbackMessage 
                     });
                 }
                 
