@@ -10,7 +10,6 @@ import {
     THREAD_WORKSPACE_TTL,
     WORKSPACE_OVERRIDE_COMMAND_PREFIX,
     MAX_SLACK_BLOCK_TEXT_LENGTH,
-    LONG_RESPONSE_THRESHOLD,
     RESET_CONVERSATION_COMMAND,
     databaseUrl,
     redisUrl
@@ -225,101 +224,7 @@ async function handleSlackMessageEventInternal(event) {
             { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`, "elements": feedbackButtonElements }
         ];
 
-        // NEW: Check if the response is longer than the threshold for sending as a file
-        if (rawReply.length > LONG_RESPONSE_THRESHOLD) {
-            console.log(`[Slack Handler] Response length (${rawReply.length}) exceeds threshold (${LONG_RESPONSE_THRESHOLD}). Sending as file.`);
-            try {
-                // Upload the response as a markdown file
-                const filename = `response-${Date.now()}.md`;
-                const title = `Response to: ${cleanedQuery.substring(0, 50)}${cleanedQuery.length > 50 ? '...' : ''}`;
-                
-                // Collection of witty comments for long responses
-                const fileAttachmentMessages = [
-                    "📄 *Your response is quite detailed, so I've attached it as a file:*",
-                    "📚 *This answer is longer than War and Peace, so here's a file instead:*",
-                    "📝 *I wrote you a novel! It's attached as a file:*",
-                    "📋 *This response would break the scroll wheel on your mouse, so I've made it a file:*",
-                    "📎 *Clippy would be proud of this attachment! Your detailed answer awaits:*",
-                    "📦 *I packed this big response into a tidy file for you:*",
-                    "🗂️ *That was a big question! Here's a file with the even bigger answer:*",
-                    "📔 *This response is longer than my last company meeting. Enjoy it as a file:*",
-                    "📜 *Behold! A scroll of knowledge (aka a file attachment):*",
-                    "🧠 *Brain dump complete! Contents saved to file for your reading pleasure:*",
-                    "📝 *I would have sent this as a message, but Slack said 'whoa there, partner!' File attached:*",
-                    "📤 *This response is so big it needed its own zip code. Here's a file instead:*",
-                    "📬 *Special delivery! One comprehensive answer, file format:*"
-                ];
-                
-                // Select a random message
-                const initialComment = fileAttachmentMessages[Math.floor(Math.random() * fileAttachmentMessages.length)];
-                
-                // First, upload the file
-                const fileUploadResult = await slack.files.uploadV2({
-                    channel_id: channel,
-                    thread_ts: replyTarget,
-                    content: rawReply,
-                    filename: filename,
-                    filetype: 'markdown',
-                    title: title,
-                    initial_comment: initialComment
-                });
-                
-                console.log(`[Slack Handler] Posted long response as a markdown file: ${filename}`);
-
-                // Add feedback in a structured message immediately after the file
-                if (isSubstantiveResponse) {
-                    // Collection of witty feedback prompts
-                    const feedbackPrompts = [
-                        "Was this response helpful?",
-                        "How did I do with this answer?",
-                        "Did this file answer your question?",
-                        "Rate my file-making skills:",
-                        "Was this worth the download?",
-                        "Did I hit the mark with this response?",
-                        "Thumbs up or down for this file?",
-                        "Did this file deliver what you needed?",
-                        "Does this deserve a spot in your bookmarks?",
-                        "Did I nail it or fail it with this response?",
-                        "Verdict on this file response?",
-                        "How's my answering? Let me know:",
-                        "File feedback appreciated:"
-                    ];
-                    
-                    // Select a random feedback prompt
-                    const feedbackPrompt = feedbackPrompts[Math.floor(Math.random() * feedbackPrompts.length)];
-                    
-                    // Create a nicer looking feedback message with context
-                    const feedbackMessage = [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": feedbackPrompt
-                            }
-                        },
-                        { "type": "divider" },
-                        { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`, "elements": feedbackButtonElements }
-                    ];
-                    
-                    await slack.chat.postMessage({ 
-                        channel, 
-                        thread_ts: replyTarget, 
-                        text: feedbackPrompt, 
-                        blocks: feedbackMessage 
-                    });
-                }
-                
-                // Return early since we've already handled the response
-                return;
-                
-            } catch (uploadError) {
-                console.error(`[Slack Error] Failed to upload response as file:`, uploadError.data?.error || uploadError.message);
-                console.log(`[Slack Handler] Falling back to normal message handling after file upload failure.`);
-                // Fall through to normal handling if the file upload fails
-            }
-        }
-
-        // 10b. Extract Segments (continue with normal processing if file upload isn't used or fails)
+        // 10b. Extract Segments
         const segments = extractTextAndCode(rawReply);
         console.log(`[Slack Handler] Extracted ${segments.length} segments (text/code). Substantive: ${isSubstantiveResponse}`);
 
