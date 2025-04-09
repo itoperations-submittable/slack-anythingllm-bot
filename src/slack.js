@@ -245,7 +245,9 @@ async function handleSlackMessageEventInternal(event) {
                 for (let j = 0; j < messageChunks.length; j++) {
                     const chunk = messageChunks[j];
                     const isLastChunkOfLastSegment = isLastSegment && (j === messageChunks.length - 1);
-                    let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
+                    let textToSend = isLastChunkOfLastSegment ? chunk.replace(/s+$/, '') : chunk;
+                    if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
+                    let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
                     if (isLastChunkOfLastSegment && isSubstantiveResponse) {
                         console.log("[Slack Handler] Adding feedback buttons to final text chunk.");
@@ -253,7 +255,7 @@ async function handleSlackMessageEventInternal(event) {
                     }
 
                     try {
-                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: chunk, blocks: currentBlocks });
+                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: textToSend, blocks: currentBlocks });
                         console.log(`[Slack Handler] Posted text chunk ${j + 1}/${messageChunks.length}.`);
                     } catch (postError) {
                         console.error(`[Slack Error] Failed post text chunk ${j + 1}:`, postError.data?.error || postError.message);
@@ -313,7 +315,9 @@ async function handleSlackMessageEventInternal(event) {
                     for (let j = 0; j < codeChunks.length; j++) {
                         const chunk = codeChunks[j];
                         const isLastChunkOfLastSegment = isLastSegment && (j === codeChunks.length - 1);
-                        let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
+                        let textToSend = isLastChunkOfLastSegment ? chunk.replace(/s+$/, '') : chunk;
+                        if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
+                        let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
                         if (isLastChunkOfLastSegment && isSubstantiveResponse) {
                             console.log("[Slack Handler] Adding feedback buttons to final inline code chunk.");
@@ -321,7 +325,7 @@ async function handleSlackMessageEventInternal(event) {
                         }
 
                         try {
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: chunk, blocks: currentBlocks });
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: textToSend, blocks: currentBlocks });
                             console.log(`[Slack Handler] Posted inline code chunk ${j + 1}/${codeChunks.length}.`);
                         } catch (postError) {
                             console.error(`[Slack Error] Failed post inline code chunk ${j + 1}:`, postError.data?.error || postError.message);
