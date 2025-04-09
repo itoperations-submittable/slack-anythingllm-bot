@@ -134,16 +134,30 @@ export function splitMessageIntoChunks(message, maxLength) {
     
     // Add section indicators if there are multiple chunks
     if (chunks.length > 1) {
-        return chunks.map((chunk, index) => {
+        const numberedChunks = chunks.map((chunk, index) => {
             // Only add section indicators to non-code chunks
             if (!chunk.trim().startsWith('```')) {
                 return `[${index + 1}/${chunks.length}] ${chunk}`;
             }
             return chunk;
         });
+        
+        // Final length check to ensure no chunk exceeds maxLength
+        // This is to catch any edge cases our logic might have missed
+        return numberedChunks.flatMap(chunk => {
+            if (chunk.length <= maxLength) {
+                return [chunk];
+            } else {
+                console.warn(`[Utils] Post-process found a chunk exceeding maxLength (${chunk.length} > ${maxLength}), forcing split`);
+                return splitByCharCount(chunk, maxLength);
+            }
+        });
     }
     
-    return chunks;
+    // One last check before returning
+    return chunks.flatMap(chunk => 
+        chunk.length <= maxLength ? [chunk] : splitByCharCount(chunk, maxLength)
+    );
 }
 
 /**

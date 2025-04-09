@@ -278,6 +278,13 @@ async function handleSlackMessageEventInternal(event) {
                     try {
                         // Use a trimmed version for the fallback text parameter
                         const fallbackText = textToSend.replace(/(\\\n|\s)+$/, '').trim();
+                        
+                        // Add explicit length logging to debug truncation issues
+                        console.log(`[Slack Handler LENGTH DEBUG] Sending message chunk with length: ${textToSend.length} chars`);
+                        if (textToSend.length > MAX_SLACK_BLOCK_TEXT_LENGTH) {
+                            console.warn(`[Slack Handler WARNING] Message chunk exceeds MAX_SLACK_BLOCK_TEXT_LENGTH (${MAX_SLACK_BLOCK_TEXT_LENGTH}): ${textToSend.length} chars`);
+                        }
+                        
                         console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
                         await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: currentBlocks });
                         console.log(`[Slack Handler] Posted text chunk ${j + 1}/${messageChunks.length}.`);
@@ -366,6 +373,13 @@ async function handleSlackMessageEventInternal(event) {
                         try {
                             // Use a trimmed version for the fallback text parameter
                             const fallbackText = textToSend.replace(/(\\\n|\s)+$/, '').trim();
+                            
+                            // Add explicit length logging to debug truncation issues
+                            console.log(`[Slack Handler LENGTH DEBUG] Sending message chunk with length: ${textToSend.length} chars`);
+                            if (textToSend.length > MAX_SLACK_BLOCK_TEXT_LENGTH) {
+                                console.warn(`[Slack Handler WARNING] Message chunk exceeds MAX_SLACK_BLOCK_TEXT_LENGTH (${MAX_SLACK_BLOCK_TEXT_LENGTH}): ${textToSend.length} chars`);
+                            }
+                            
                             console.log(`[Slack Handler DEBUG] Fallback text (${fallbackText.length} chars): "${fallbackText.substring(0, 50)}..."`);
                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: currentBlocks });
                             console.log(`[Slack Handler] Posted inline code chunk ${j + 1}/${codeChunks.length}.`);
