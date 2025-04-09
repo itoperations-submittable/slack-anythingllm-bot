@@ -120,7 +120,7 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText) {
     }
     
     // Add instruction to not include context references in the response
-    const enhancedInputText = `${inputText}\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations.`;
+    const enhancedInputText = `${inputText}\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations. Keep your response concise and to the point unless explicitly asked for detailed information.`;
     
     const requestBody = {
         message: enhancedInputText, // Send enhanced message with instruction
