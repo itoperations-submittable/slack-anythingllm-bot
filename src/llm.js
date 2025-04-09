@@ -71,23 +71,24 @@ async function getAvailableSphereSlugs() {
     }
 
     // Fallback if all attempts fail
-    console.warn("[LLM Service/getSlugs] Failed to get slugs from all sources. Falling back to ['public'].");
-    return ['public'];
+    console.warn("[LLM Service/getSlugs] Failed to get slugs from all sources. Falling back to ['all'].");
+    return ['all']; // Default to 'all' if API fails
 }
 
 // --- Sphere Decision Logic ---
 export async function decideSphere(userQuestion, conversationHistory = "") {
     console.log(`[LLM Service/decideSphere] Starting for query: "${userQuestion}".`);
-    const availableWorkspaces = await getAvailableSphereSlugs();
+    const availableWorkspaces = await getAvailableSphereSlugs(); // This already defaults to ['all'] on failure
 
     if (!availableWorkspaces || availableWorkspaces.length === 0) {
-         console.error("[LLM Service/decideSphere] No workspace slugs available. Falling back.");
-         return 'public';
+         console.error("[LLM Service/decideSphere] No workspace slugs available. Falling back to 'all'.");
+         return 'all';
     }
 
-    // Ensure 'public' is always an option if not explicitly listed
-    if (!availableWorkspaces.includes('public')) {
-        availableWorkspaces.push('public');
+    // Ensure 'all' is always an option if not explicitly listed by the API
+    if (!availableWorkspaces.includes('all')) {
+        availableWorkspaces.push('all');
+        console.log("[LLM Service/decideSphere] 'all' workspace added to dynamic routing options.");
     }
 
     let selectionPrompt = "Consider the following conversation history (if any):\n";
@@ -96,10 +97,11 @@ export async function decideSphere(userQuestion, conversationHistory = "") {
     selectionPrompt += `Which knowledge sphere (represented by a workspace slug) from this list [${availableWorkspaces.join(', ')}] is the most relevant context to answer the query?\n`;
     selectionPrompt += `Your answer should ONLY be the workspace slug itself, exactly as it appears in the list.`;
 
-    console.log(`[LLM Service/decideSphere] Sending context-aware prompt to public routing.`);
+    console.log(`[LLM Service/decideSphere] Sending context-aware prompt to public routing.`); // Route via public
 
     try {
         const startTime = Date.now();
+        // Always route sphere decisions via the 'public' workspace
         const selectionResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, {
             message: selectionPrompt, mode: 'chat',
         }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 35000 });
@@ -107,26 +109,31 @@ export async function decideSphere(userQuestion, conversationHistory = "") {
         console.log(`[LLM Service/decideSphere] Routing LLM call duration: ${duration}ms`);
 
         const chosenSlugRaw = selectionResponse.data?.textResponse;
-        console.log(`[LLM Service/decideSphere] Raw routing response: "${chosenSlugRaw}"`);
-        if (!chosenSlugRaw || typeof chosenSlugRaw !== 'string') { console.warn('[LLM Service/decideSphere] Bad routing response.'); return 'public';}
+        console.log(`[LLM Service/decideSphere] Raw routing response: \"${chosenSlugRaw}\"`);
+        // Fallback to 'all' if response is bad
+        const isBadResponse = !chosenSlugRaw || typeof chosenSlugRaw !== 'string';
+        if (isBadResponse) {
+            console.warn('[LLM Service/decideSphere] Bad routing response. Falling back to \'all\'.');
+            return 'all';
+        }
         const chosenSlug = chosenSlugRaw.trim();
 
         if (availableWorkspaces.includes(chosenSlug)) {
             console.log(`[LLM Service/decideSphere] Context-aware valid slug selected: "${chosenSlug}"`);
             return chosenSlug;
         } else {
-            // Try to find a partial match in case of extra text from LLM
             const foundSlug = availableWorkspaces.find(slug => chosenSlug.includes(slug));
             if (foundSlug) {
                 console.log(`[LLM Service/decideSphere] Found valid slug "${foundSlug}" in noisy response.`);
                 return foundSlug;
             }
-            console.warn(`[LLM Service/decideSphere] Invalid slug response "${chosenSlug}". Falling back.`);
-            return 'public';
+            // Fallback to 'all' if response is invalid
+            console.warn(`[LLM Service/decideSphere] Invalid slug response "${chosenSlug}". Falling back to 'all'.`);
+            return 'all';
         }
     } catch (error) {
         console.error('[LLM Service/decideSphere] Failed query public workspace:', error.response?.data || error.message);
-        return 'public'; // Fallback on error
+        return 'all'; // Fallback to 'all' on error
     }
 }
 

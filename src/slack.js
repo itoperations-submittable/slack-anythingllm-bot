@@ -152,7 +152,7 @@ async function handleSlackMessageEventInternal(event) {
     }
 
     // --- Main Processing Logic (Try/Catch/Finally for cleanup) ---
-    let sphere = 'public'; // Default sphere
+    let sphere = 'all'; // Default sphere is now 'all'
     try {
         // 4. Check History Reset Flag
         let skipHistory = false;
@@ -168,7 +168,7 @@ async function handleSlackMessageEventInternal(event) {
 
         // 5. Determine Target Sphere (Thread Cache -> Manual Override -> Dynamic Routing)
         let conversationHistory = "";
-        let workspaceSource = 'DefaultPublic';
+        let workspaceSource = 'DefaultAll'; // Updated default source name
 
         // 5a. Check Thread Workspace Cache
         if (threadTs && isRedisReady) { // Only cache for threads
@@ -185,7 +185,7 @@ async function handleSlackMessageEventInternal(event) {
         }
 
         // 5b. Check for Manual Workspace Override (if not using thread cache)
-        if (workspaceSource === 'DefaultPublic') {
+        if (workspaceSource === 'DefaultAll') {
             // Use regex to find the first occurrence of # followed by non-space characters
             const overrideRegex = /#(\S+)/;
             const match = cleanedQuery.match(overrideRegex);
@@ -210,7 +210,7 @@ async function handleSlackMessageEventInternal(event) {
         }
 
         // 5c. Dynamic Routing (if no cache or override)
-        if (workspaceSource === 'DefaultPublic') {
+        if (workspaceSource === 'DefaultAll') {
             console.log(`[Slack Handler] No thread cache or manual override. Proceeding with history fetch and dynamic routing...`);
             // Fetch history only if needed for routing & not explicitly skipped
             if (!skipHistory) {
@@ -220,8 +220,8 @@ async function handleSlackMessageEventInternal(event) {
             workspaceSource = 'DynamicRouting';
             console.log(`[Slack Handler] Dynamically decided Sphere: ${sphere}`);
 
-             // Cache the decided sphere for the thread if dynamic routing was used
-             if (threadTs && isRedisReady && sphere !== 'public') { // Only cache non-public for threads
+             // Cache the decided sphere for the thread if dynamic routing was used AND it's not the default 'all'
+             if (threadTs && isRedisReady && sphere !== 'all') { // Condition changed from 'public' to 'all'
                  try {
                      await redisClient.set(threadWorkspaceKey, sphere, { EX: THREAD_WORKSPACE_TTL });
                      console.log(`[Slack Handler] Cached workspace "${sphere}" for thread ${threadTs} (TTL: ${THREAD_WORKSPACE_TTL}s).`);
