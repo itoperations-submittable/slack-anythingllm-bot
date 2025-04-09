@@ -449,18 +449,13 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
     // Process the markdown to ensure clean formatting
     let processedMarkdown = markdown;
     
-    // Remove language identifiers from code blocks
-    processedMarkdown = processedMarkdown.replace(/^```(\w+)\n/gm, '```\n');
-    
-    // Add proper spacing around code fences
-    processedMarkdown = processedMarkdown.replace(/^```\n(?!\n)/gm, '```\n\n');
-    processedMarkdown = processedMarkdown.replace(/(?<!\n)\n```$/gm, '\n\n```');
-    
-    // Remove any escaped newlines at the end
+    // Remove escaped newlines at the end
     processedMarkdown = processedMarkdown.replace(/\\n\s*$/, '');
     
     // Remove any double-escaped newlines
     processedMarkdown = processedMarkdown.replace(/\\\\n/g, '');
+    
+    console.log(`[Utils/markdownToRichTextBlock] Processing markdown of length: ${processedMarkdown.length}`);
 
     // Create the basic rich_text block structure
     const richTextBlock = {
@@ -481,42 +476,190 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
             "elements": []
         };
         
-        // Handle code blocks
-        if (paragraph.trim().startsWith('```') && paragraph.trim().endsWith('```')) {
+        // Handle code blocks - match triple backticks with optional language identifier
+        if (paragraph.trim().match(/^```[\w]*[\s\S]*```$/)) {
             // Extract the code content
-            const codeContent = paragraph.trim().replace(/```(?:\w+)?\n?/, '').replace(/\n?```$/, '');
+            const codeMatch = paragraph.trim().match(/^```([\w]*)\n?([\s\S]*?)```$/);
+            const codeContent = codeMatch ? codeMatch[2] : paragraph.replace(/^```[\w]*\n?|```$/g, '');
+            
+            console.log(`[Utils/markdownToRichTextBlock] Found code block with content length: ${codeContent.length}`);
             
             // Add a preformatted element for code
             section.elements.push({
-                "type": "text",
-                "text": codeContent,
-                "style": {
-                    "code": true
-                }
+                "type": "rich_text_preformatted",
+                "elements": [{
+                    "type": "text", 
+                    "text": codeContent
+                }]
             });
+            
+            richTextBlock.elements.push(section);
         } 
-        // Handle inline formatting
+        // Handle normal paragraphs with inline formatting
         else {
-            // Basic parsing of inline elements - in a production system, 
-            // you would use a proper markdown parser for this
-            
-            // For now, just add the text as is
-            section.elements.push({
-                "type": "text",
-                "text": paragraph
-            });
-            
-            // Note: For a more complete solution, you would parse for:
-            // - Bold (*text* or **text**)
-            // - Italic (_text_ or *text*)
-            // - Code blocks (`code`)
-            // - Links ([text](url))
-            // - etc.
+            // Parse the paragraph into formatted elements
+            parseInlineFormatting(paragraph, section.elements);
+            richTextBlock.elements.push(section);
         }
-        
-        richTextBlock.elements.push(section);
     });
     
     console.log(`[Utils] Created rich_text block with ${richTextBlock.elements.length} section(s)`);
     return richTextBlock;
+}
+
+/**
+ * Parses inline markdown formatting (bold, italic, code, etc.) and adds appropriate elements
+ * to the elements array
+ * @param {string} text - The text to parse
+ * @param {Array} elements - The array to add elements to
+ */
+function parseInlineFormatting(text, elements) {
+    // Simple regex pattern to match basic markdown
+    // This is a simplified implementation and might need improvements for complex cases
+    let currentText = '';
+    let i = 0;
+    
+    while (i < text.length) {
+        // Bold: *text* or **text**
+        if ((text[i] === '*' && text[i+1] === '*') || 
+            (text[i] === '_' && text[i+1] === '_')) {
+            
+            // Push any accumulated regular text first
+            if (currentText) {
+                elements.push({ "type": "text", "text": currentText });
+                currentText = '';
+            }
+            
+            const marker = text[i];
+            i += 2; // Skip the markers
+            let boldText = '';
+            
+            // Find the closing marker
+            while (i < text.length && 
+                  !(text[i] === marker && text[i+1] === marker)) {
+                boldText += text[i];
+                i++;
+            }
+            
+            // Add bold text element
+            if (boldText) {
+                elements.push({ 
+                    "type": "text", 
+                    "text": boldText,
+                    "style": { "bold": true }
+                });
+            }
+            
+            i += 2; // Skip closing markers
+        }
+        // Italic: *text* or _text_ (single marker)
+        else if (text[i] === '*' || text[i] === '_') {
+            // Push any accumulated regular text first
+            if (currentText) {
+                elements.push({ "type": "text", "text": currentText });
+                currentText = '';
+            }
+            
+            const marker = text[i];
+            i++; // Skip the marker
+            let italicText = '';
+            
+            // Find the closing marker
+            while (i < text.length && text[i] !== marker) {
+                italicText += text[i];
+                i++;
+            }
+            
+            // Add italic text element
+            if (italicText) {
+                elements.push({ 
+                    "type": "text", 
+                    "text": italicText,
+                    "style": { "italic": true }
+                });
+            }
+            
+            i++; // Skip closing marker
+        }
+        // Inline code: `code`
+        else if (text[i] === '`') {
+            // Push any accumulated regular text first
+            if (currentText) {
+                elements.push({ "type": "text", "text": currentText });
+                currentText = '';
+            }
+            
+            i++; // Skip the backtick
+            let codeText = '';
+            
+            // Find the closing backtick
+            while (i < text.length && text[i] !== '`') {
+                codeText += text[i];
+                i++;
+            }
+            
+            // Add code text element
+            if (codeText) {
+                elements.push({ 
+                    "type": "text", 
+                    "text": codeText,
+                    "style": { "code": true }
+                });
+            }
+            
+            i++; // Skip closing backtick
+        }
+        // Simple link: [text](url)
+        else if (text[i] === '[') {
+            // Push any accumulated regular text first
+            if (currentText) {
+                elements.push({ "type": "text", "text": currentText });
+                currentText = '';
+            }
+            
+            i++; // Skip the opening bracket
+            let linkText = '';
+            
+            // Find the closing bracket
+            while (i < text.length && text[i] !== ']') {
+                linkText += text[i];
+                i++;
+            }
+            
+            i++; // Skip closing bracket
+            
+            // Check for link URL
+            if (i < text.length && text[i] === '(') {
+                i++; // Skip the opening parenthesis
+                let linkUrl = '';
+                
+                // Find the closing parenthesis
+                while (i < text.length && text[i] !== ')') {
+                    linkUrl += text[i];
+                    i++;
+                }
+                
+                // Add link element
+                if (linkText && linkUrl) {
+                    elements.push({ 
+                        "type": "link", 
+                        "text": linkText,
+                        "url": linkUrl
+                    });
+                }
+                
+                i++; // Skip closing parenthesis
+            }
+        }
+        // Regular text
+        else {
+            currentText += text[i];
+            i++;
+        }
+    }
+    
+    // Add any remaining text
+    if (currentText) {
+        elements.push({ "type": "text", "text": currentText });
+    }
 }
