@@ -663,6 +663,9 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // This connects the internal handler logic exported from slack.js to the event emitter
 slackEvents.on('message', handleSlackEvent);
 
+// *** ADDED: Listener for app mentions in channels ***
+slackEvents.on('app_mention', handleSlackEvent);
+
 slackEvents.on('error', (error) => {
     console.error('[SlackEvents Adapter Error]', error.name, error.code || '', error.message);
     if (error.request) { console.error('Request:', error.request.method, error.request.url); }
