@@ -331,4 +331,33 @@ async function handleSlackMessageEventInternal(event) {
                         content: segment.content,
                         filename: filename, // Rely on filename extension for type detection
                         title: title,
-                        initial_comment: `
+                        initial_comment: `\`${title}\``
+                    });
+                    console.log(`[Slack Handler] Posted code snippet for segment ${i + 1}/${segments.length}.`);
+
+                    // Add feedback buttons if this is the VERY LAST segment and it's substantive
+                    if (isLastSegment && isSubstantiveResponse) {
+                        console.log("[Slack Handler] Adding feedback buttons after final code snippet.");
+                        currentBlocks.push({ "type": "divider" });
+                        currentBlocks.push({
+                            "type": "actions", "block_id": `feedback_${originalTs}_${sphere}`,
+                            "elements": [
+                                { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
+                                { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
+                                { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
+                            ]
+                        });
+                    }
+
+                } catch (uploadError) {
+                    console.error(`[Slack Error] Failed upload code snippet:`, uploadError.data?.error || uploadError.message);
+                    await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error uploading code snippet)_` }).catch(()=>{});
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error("[Slack Handler] Error in main processing logic:", error);
+        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error processing response)_` }).catch(()=>{});
+    }
+}
