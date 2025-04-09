@@ -74,18 +74,24 @@ export function splitMessageIntoChunks(text, maxLength) {
 
 // --- Slack Markdown Conversion ---
 export function formatSlackMessage(rawText) {
-     if (!rawText) return ''; // Handle empty input
+     if (!rawText) return '';
 
-     // Pre-process: Remove language identifiers from code blocks for better slackify-markdown compatibility
-     // Looks for ``` followed by word characters and a newline, replaces with ``` and a newline.
-     const processedText = rawText.replace(/^```(\w+)\n/gm, '```\n');
+     // 1. Pre-process: Remove language identifiers
+     let processedText = rawText.replace(/^``` *(\w+?) *\n/gm, '```\n');
+
+     // 2. Pre-process: Ensure extra newline padding around code blocks for Slack rendering
+     // Add newline AFTER opening ``` (if not already blank)
+     processedText = processedText.replace(/^```\n(?!\n)/gm, '```\n\n');
+     // Add newline BEFORE closing ``` (if not already blank)
+     processedText = processedText.replace(/(?<!\n)\n```$/gm, '\n\n```');
+
+     // Optional: Log the final processed text before slackify
+     // console.log("[Slack Handler Debug] Final Pre-processed Text:\n", processedText);
 
      try {
-         // Convert the potentially modified Markdown to Slack mrkdwn
          return slackifyMarkdown(processedText);
      } catch (conversionError) {
          console.error("[Utils] Error converting response with slackify-markdown, using processed text:", conversionError);
-         // Fallback to processed text if slackify fails (still better than raw potentially)
          return processedText;
      }
 }
