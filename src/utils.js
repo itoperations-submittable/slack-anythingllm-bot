@@ -437,3 +437,86 @@ export function formatSlackMessage(textSegment) {
          return textSegment;
      }
 }
+
+/**
+ * Converts markdown text to Slack's rich_text blocks format
+ * @param {string} markdown - Markdown text to convert
+ * @returns {object} - Slack rich_text block
+ */
+export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}`) {
+    if (!markdown) return null;
+
+    // Process the markdown to ensure clean formatting
+    let processedMarkdown = markdown;
+    
+    // Remove language identifiers from code blocks
+    processedMarkdown = processedMarkdown.replace(/^```(\w+)\n/gm, '```\n');
+    
+    // Add proper spacing around code fences
+    processedMarkdown = processedMarkdown.replace(/^```\n(?!\n)/gm, '```\n\n');
+    processedMarkdown = processedMarkdown.replace(/(?<!\n)\n```$/gm, '\n\n```');
+    
+    // Remove any escaped newlines at the end
+    processedMarkdown = processedMarkdown.replace(/\\n\s*$/, '');
+    
+    // Remove any double-escaped newlines
+    processedMarkdown = processedMarkdown.replace(/\\\\n/g, '');
+
+    // Create the basic rich_text block structure
+    const richTextBlock = {
+        "type": "rich_text",
+        "block_id": blockId,
+        "elements": []
+    };
+
+    // Split by double newlines to create paragraphs
+    const paragraphs = processedMarkdown.split(/\n\n+/);
+    
+    // For each paragraph, create a rich_text_section
+    paragraphs.forEach(paragraph => {
+        if (!paragraph.trim()) return;
+        
+        const section = {
+            "type": "rich_text_section",
+            "elements": []
+        };
+        
+        // Handle code blocks
+        if (paragraph.trim().startsWith('```') && paragraph.trim().endsWith('```')) {
+            // Extract the code content
+            const codeContent = paragraph.trim().replace(/```(?:\w+)?\n?/, '').replace(/\n?```$/, '');
+            
+            // Add a preformatted element for code
+            section.elements.push({
+                "type": "text",
+                "text": codeContent,
+                "style": {
+                    "code": true
+                }
+            });
+        } 
+        // Handle inline formatting
+        else {
+            // Basic parsing of inline elements - in a production system, 
+            // you would use a proper markdown parser for this
+            
+            // For now, just add the text as is
+            section.elements.push({
+                "type": "text",
+                "text": paragraph
+            });
+            
+            // Note: For a more complete solution, you would parse for:
+            // - Bold (*text* or **text**)
+            // - Italic (_text_ or *text*)
+            // - Code blocks (`code`)
+            // - Links ([text](url))
+            // - etc.
+        }
+        
+        richTextBlock.elements.push(section);
+    });
+    
+    console.log(`[Utils] Created rich_text block with ${richTextBlock.elements.length} section(s)`);
+    return richTextBlock;
+}
