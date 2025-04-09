@@ -78,4 +78,84 @@ export async function shutdownServices(signal) {
             console.error('Error closing Database pool:', err);
         }
     }
+}
+
+// --- Slack/AnythingLLM Thread Mapping --- 
+
+/**
+ * Retrieves the AnythingLLM thread mapping for a given Slack thread.
+ * Updates the last_accessed_at timestamp.
+ * @param {string} channelId - The Slack channel ID.
+ * @param {string} slackThreadTs - The starting timestamp of the Slack thread.
+ * @returns {Promise<{anythingllm_thread_slug: string, anythingllm_workspace_slug: string} | null>} Mapping object or null if not found.
+ */
+export async function getAnythingLLMThreadMapping(channelId, slackThreadTs) {
+    if (!dbPool || !databaseUrl) {
+        console.warn("[Service/ThreadMap] DB unavailable, cannot get mapping.");
+        return null;
+    }
+    const selectQuery = `
+        SELECT anythingllm_thread_slug, anythingllm_workspace_slug
+        FROM slack_anythingllm_threads
+        WHERE slack_channel_id = $1 AND slack_thread_ts = $2;`;
+    const updateAccessTimeQuery = `
+        UPDATE slack_anythingllm_threads
+        SET last_accessed_at = CURRENT_TIMESTAMP
+        WHERE slack_channel_id = $1 AND slack_thread_ts = $2;`;
+
+    let client;
+    try {
+        client = await dbPool.connect();
+        // Select first
+        const result = await client.query(selectQuery, [channelId, slackThreadTs]);
+        if (result.rows.length > 0) {
+            const mapping = result.rows[0];
+            console.log(`[Service/ThreadMap] Found mapping: Slack ${channelId}:${slackThreadTs} -> AnythingLLM ${mapping.anythingllm_workspace_slug}:${mapping.anythingllm_thread_slug}`);
+            // Update access time asynchronously (don't wait for it)
+            client.query(updateAccessTimeQuery, [channelId, slackThreadTs])
+                .catch(err => console.error("[Service/ThreadMap] Failed update access time:", err));
+            return mapping;
+        } else {
+            console.log(`[Service/ThreadMap] No mapping found for Slack ${channelId}:${slackThreadTs}`);
+            return null;
+        }
+    } catch (err) {
+        console.error("[Service/ThreadMap DB Error] Failed getting mapping:", err);
+        return null;
+    } finally {
+        if (client) client.release();
+    }
+}
+
+/**
+ * Stores a new mapping between a Slack thread and an AnythingLLM thread.
+ * @param {string} channelId - The Slack channel ID.
+ * @param {string} slackThreadTs - The starting timestamp of the Slack thread.
+ * @param {string} workspaceSlug - The AnythingLLM workspace slug.
+ * @param {string} anythingLLMThreadSlug - The AnythingLLM thread slug.
+ * @returns {Promise<boolean>} True if successful, false otherwise.
+ */
+export async function storeAnythingLLMThreadMapping(channelId, slackThreadTs, workspaceSlug, anythingLLMThreadSlug) {
+    if (!dbPool || !databaseUrl) {
+        console.warn("[Service/ThreadMap] DB unavailable, cannot store mapping.");
+        return false;
+    }
+    const insertQuery = `
+        INSERT INTO slack_anythingllm_threads 
+            (slack_channel_id, slack_thread_ts, anythingllm_workspace_slug, anythingllm_thread_slug)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (slack_channel_id, slack_thread_ts) DO NOTHING; -- Avoid errors if mapping somehow already exists
+    `;
+    let client;
+    try {
+        client = await dbPool.connect();
+        const result = await client.query(insertQuery, [channelId, slackThreadTs, workspaceSlug, anythingLLMThreadSlug]);
+        console.log(`[Service/ThreadMap] Stored mapping: Slack ${channelId}:${slackThreadTs} -> AnythingLLM ${workspaceSlug}:${anythingLLMThreadSlug}. Result rows: ${result.rowCount}`);
+        return result.rowCount > 0;
+    } catch (err) {
+        console.error("[Service/ThreadMap DB Error] Failed storing mapping:", err);
+        return false;
+    } finally {
+        if (client) client.release();
+    }
 } 

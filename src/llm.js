@@ -75,88 +75,71 @@ async function getAvailableSphereSlugs() {
     return ['all']; // Default to 'all' if API fails
 }
 
-// --- Sphere Decision Logic ---
-export async function decideSphere(userQuestion, conversationHistory = "") {
-    console.log(`[LLM Service/decideSphere] Starting for query: "${userQuestion}".`);
-    const availableWorkspaces = await getAvailableSphereSlugs(); // This already defaults to ['all'] on failure
+// --- Sphere Decision Logic (REMOVED - Sphere decision now happens in slack.js before creating/fetching thread) ---
+// export async function decideSphere(userQuestion, conversationHistory = "") { ... }
 
-    if (!availableWorkspaces || availableWorkspaces.length === 0) {
-         console.error("[LLM Service/decideSphere] No workspace slugs available. Falling back to 'all'.");
-         return 'all';
-    }
-
-    // Ensure 'all' is always an option if not explicitly listed by the API
-    if (!availableWorkspaces.includes('all')) {
-        availableWorkspaces.push('all');
-        console.log("[LLM Service/decideSphere] 'all' workspace added to dynamic routing options.");
-    }
-
-    let selectionPrompt = "Consider the following conversation history (if any):\n";
-    selectionPrompt += conversationHistory ? conversationHistory.trim() + "\n\n" : "[No History Provided]\n\n";
-    selectionPrompt += `Based on the history (if any) and the latest user query: "${userQuestion}"\n\n`;
-    selectionPrompt += `Which knowledge sphere (represented by a workspace slug) from this list [${availableWorkspaces.join(', ')}] is the most relevant context to answer the query?\n`;
-    selectionPrompt += `Your answer should ONLY be the workspace slug itself, exactly as it appears in the list.`;
-
-    console.log(`[LLM Service/decideSphere] Sending context-aware prompt to public routing.`); // Route via public
-
+// +++ NEW: Function to Create a New AnythingLLM Thread +++
+/**
+ * Creates a new thread in a specific AnythingLLM workspace.
+ * @param {string} sphere - The workspace slug.
+ * @returns {Promise<string | null>} The new thread slug, or null on error.
+ */
+export async function createNewAnythingLLMThread(sphere) {
+    console.log(`[LLM Service/createThread] Creating new thread in sphere: ${sphere}...`);
     try {
-        const startTime = Date.now();
-        // Always route sphere decisions via the 'public' workspace
-        const selectionResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/public/chat`, {
-            message: selectionPrompt, mode: 'chat',
-        }, { headers: { Authorization: `Bearer ${anythingLLMApiKey}` }, timeout: 35000 });
-        const duration = Date.now() - startTime;
-        console.log(`[LLM Service/decideSphere] Routing LLM call duration: ${duration}ms`);
-
-        const chosenSlugRaw = selectionResponse.data?.textResponse;
-        console.log(`[LLM Service/decideSphere] Raw routing response: \"${chosenSlugRaw}\"`);
-        // Fallback to 'all' if response is bad
-        const isBadResponse = !chosenSlugRaw || typeof chosenSlugRaw !== 'string';
-        if (isBadResponse) {
-            console.warn('[LLM Service/decideSphere] Bad routing response. Falling back to \'all\'.');
-            return 'all';
-        }
-        const chosenSlug = chosenSlugRaw.trim();
-
-        if (availableWorkspaces.includes(chosenSlug)) {
-            console.log(`[LLM Service/decideSphere] Context-aware valid slug selected: "${chosenSlug}"`);
-            return chosenSlug;
+        const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/thread/new`, 
+            {}, // No body needed for thread creation
+            { 
+                headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
+                timeout: 15000, // 15s timeout for thread creation
+            });
+        
+        if (response.data && response.data.thread && response.data.thread.slug) {
+            const newThreadSlug = response.data.thread.slug;
+            console.log(`[LLM Service/createThread] Successfully created thread with slug: ${newThreadSlug}`);
+            return newThreadSlug;
         } else {
-            const foundSlug = availableWorkspaces.find(slug => chosenSlug.includes(slug));
-            if (foundSlug) {
-                console.log(`[LLM Service/decideSphere] Found valid slug "${foundSlug}" in noisy response.`);
-                return foundSlug;
-            }
-            // Fallback to 'all' if response is invalid
-            console.warn(`[LLM Service/decideSphere] Invalid slug response "${chosenSlug}". Falling back to 'all'.`);
-            return 'all';
+            console.error('[LLM Service/createThread] Unexpected API response structure:', response.data);
+            return null;
         }
     } catch (error) {
-        console.error('[LLM Service/decideSphere] Failed query public workspace:', error.response?.data || error.message);
-        return 'all'; // Fallback to 'all' on error
+        console.error(`[LLM Error - Create Thread - Sphere: ${sphere}]`, error.response?.data || error.message);
+        return null;
     }
 }
 
-// --- Main LLM Chat Function (Non-Streaming) ---
-export async function queryLlm(sphere, inputText, sessionId) {
-    console.log(`[LLM Service/queryLlm] Querying sphere: ${sphere} with mode: query`);
+// --- Main LLM Chat Function (MODIFIED to use Thread Endpoint) ---
+// Now requires anythingLLMThreadSlug, uses thread chat endpoint, and only sends current message.
+// Removed sessionId parameter.
+export async function queryLlm(sphere, anythingLLMThreadSlug, inputText) {
+    console.log(`[LLM Service/queryLlm] Querying sphere: ${sphere}, thread: ${anythingLLMThreadSlug}`);
+    
+    if (!anythingLLMThreadSlug) {
+         console.error('[LLM Service/queryLlm] Error: anythingLLMThreadSlug is required but was not provided.');
+         throw new Error('Internal error: Missing AnythingLLM thread slug.');
+    }
+    
     const requestBody = {
-        message: inputText,
-        mode: 'query',
-        sessionId: sessionId,
+        message: inputText, // Only send the current message
+        mode: 'query' // Keep mode as query for Q&A
     };
 
-    console.log("[LLM Service/queryLlm] Request Body:", JSON.stringify(requestBody, null, 2));
+    console.log("[LLM Service/queryLlm] Request Body (Thread Chat):", JSON.stringify(requestBody, null, 2));
 
     try {
-        const llmResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`, requestBody, {
-            headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
-            timeout: 90000, // 90s timeout for final answer
-        });
+        const llmResponse = await axios.post(
+            `${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/thread/${anythingLLMThreadSlug}/chat`,
+            requestBody,
+            {
+                headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
+                timeout: 90000, // 90s timeout for final answer
+            }
+        );
         return llmResponse.data.textResponse || null; // Return null if no textResponse
     } catch (error) {
-        console.error(`[LLM Error - Sphere: ${sphere}]`, error.response?.data || error.message);
-        throw new Error(`LLM query failed for sphere ${sphere}: ${error.message}`); // Re-throw error for handling upstream
+        console.error(`[LLM Error - Sphere: ${sphere}, Thread: ${anythingLLMThreadSlug}]`, error.response?.data || error.message);
+        // More specific error message
+        throw new Error(`LLM query failed for sphere ${sphere}, thread ${anythingLLMThreadSlug}: ${error.message}`); 
     }
 }
 

@@ -15,8 +15,8 @@ import {
     redisUrl
 } from './config.js';
 import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage } from './utils.js';
-import { redisClient, isRedisReady, dbPool } from './services.js';
-import { decideSphere, queryLlm, getWorkspaces } from './llm.js';
+import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
+import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 
 // Initialize Slack clients
 export const slack = new WebClient(slackToken);
@@ -102,41 +102,25 @@ async function storeFeedback(feedbackData) {
     }
 }
 
-// --- Main Event Handler Logic --- (Refactored)
+// --- Main Event Handler Logic --- (Refactored for AnythingLLM Threads)
 async function handleSlackMessageEventInternal(event) {
     const handlerStartTime = Date.now();
-    const { user: userId, text: originalText = '', channel, ts: originalTs, thread_ts: threadTs, event_ts } = event;
+    const { user: userId, text: originalText = '', channel, ts: originalTs, thread_ts: threadTs } = event;
 
-    // 1. Initial Processing & Context Setup
+    // 1. Initial Processing & Context Setup (Clean query, determine reply target)
     let cleanedQuery = originalText.trim();
     const mentionString = `<@${botUserId}>`;
     const wasMentioned = originalText.includes(mentionString);
     if (wasMentioned) { cleanedQuery = cleanedQuery.replace(mentionString, '').trim(); }
-
     const isDM = channel.startsWith('D');
-    const replyTarget = threadTs || originalTs;
-    const contextTs = threadTs || originalTs;
-    const threadWorkspaceKey = `${THREAD_WORKSPACE_PREFIX}${channel}:${contextTs}`;
+    // replyTarget is the TS of the message we reply to, which defines the Slack thread context.
+    const replyTarget = threadTs || originalTs; 
+    // contextTs is no longer needed for history cache
 
-    console.log(`[Slack Handler] Start. User: ${userId}, Chan: ${channel}, OrigTS: ${originalTs}, ThreadTS: ${threadTs}, ContextTS: ${contextTs}, Query: "${cleanedQuery}"`);
+    console.log(`[Slack Handler] Start. User: ${userId}, Chan: ${channel}, OrigTS: ${originalTs}, ThreadTS: ${threadTs}, ReplyTargetTS: ${replyTarget}, Query: "${cleanedQuery}"`);
 
-    // 2. Check for Reset Command
-    if (originalText.toLowerCase() === RESET_CONVERSATION_COMMAND) {
-        if (redisUrl && isRedisReady) {
-            try {
-                const resetKey = `${RESET_HISTORY_REDIS_PREFIX}${channel}`;
-                await redisClient.set(resetKey, 'true', { EX: RESET_HISTORY_TTL });
-                console.log(`[Slack Handler] Set reset flag ${resetKey}`);
-                await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "✅ Conversation context will be ignored for your next message." });
-            } catch (redisError) {
-                console.error(`[Redis Error] Failed set reset flag for ${channel}:`, redisError);
-                await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "⚠️ Error setting conversation reset flag." });
-            }
-        } else {
-             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "⚠️ Cannot reset conversation context (feature unavailable)." });
-        }
-        return;
-    }
+    // 2. Check for Reset Command (No longer needed for history, could be repurposed or removed later)
+    // if (originalText.toLowerCase() === RESET_CONVERSATION_COMMAND) { ... return; }
 
     // 3. Post Initial Processing Message
     let thinkingMessageTs = null;
@@ -146,117 +130,82 @@ async function handleSlackMessageEventInternal(event) {
         console.log(`[Slack Handler] Posted thinking message (ts: ${thinkingMessageTs}).`);
     } catch (slackError) {
          console.error("[Slack Error] Failed post initial thinking message:", slackError.data?.error || slackError.message);
-         // If this fails, we can't update/delete later, might as well stop.
          return;
     }
 
     // --- Main Processing Logic (Try/Catch/Finally for cleanup) ---
-    let sphere = 'all'; // Default sphere is now 'all'
+    let anythingLLMThreadSlug = null;
+    let workspaceSlugForThread = null; // Track the workspace associated with the thread
     try {
-        // 4. Check History Reset Flag
-        let skipHistory = false;
-        if (redisUrl && isRedisReady) {
-            const resetKey = `${RESET_HISTORY_REDIS_PREFIX}${channel}`;
-            try {
-                if (await redisClient.del(resetKey) === 1) { // Try to delete the key, if it existed, set flag
-                    console.log(`[Slack Handler] Reset flag found and deleted for ${channel}. Skipping history.`);
-                    skipHistory = true;
-                }
-            } catch(redisError) { console.error(`[Redis Error] Failed check/delete reset flag ${resetKey}:`, redisError); }
-        }
+        // 4. Check History Reset Flag (REMOVED - No longer applicable)
 
-        // 5. Determine Target Sphere (Thread Cache -> Manual Override -> Default 'all')
-        // History fetching is removed here as it was only for dynamic routing
-        let workspaceSource = 'DefaultAll';
-
-        // 5a. Check Thread Workspace Cache
-        if (threadTs && isRedisReady) { // Only cache for threads
-            try {
-                const cachedSphere = await redisClient.get(threadWorkspaceKey);
-                if (cachedSphere) {
-                    sphere = cachedSphere;
-                    workspaceSource = 'ThreadCache';
-                    console.log(`[Slack Handler] Using cached workspace "${sphere}" for thread ${threadTs}.`);
-                }
-            } catch (err) { console.error(`[Redis Error] Failed get thread workspace cache ${threadWorkspaceKey}:`, err); }
-        }
-
-        // 5b. Check for Manual Workspace Override (if not using thread cache)
-        if (workspaceSource === 'DefaultAll') {
+        // 5. Determine Target Sphere & AnythingLLM Thread
+        // 5a. Check for existing AnythingLLM thread mapping in DB
+        const existingMapping = await getAnythingLLMThreadMapping(channel, replyTarget);
+        
+        if (existingMapping) {
+            anythingLLMThreadSlug = existingMapping.anythingllm_thread_slug;
+            workspaceSlugForThread = existingMapping.anythingllm_workspace_slug;
+            console.log(`[Slack Handler] Found existing AnythingLLM thread: ${workspaceSlugForThread}:${anythingLLMThreadSlug}`);
+        } else {
+            console.log(`[Slack Handler] No existing AnythingLLM thread found for Slack thread ${replyTarget}. Determining initial sphere...`);
+            // 5b. If no mapping, determine initial workspace (check override, default)
+            let initialSphere = 'all'; // Default sphere for new threads
             const overrideRegex = /#(\S+)/;
             const match = cleanedQuery.match(overrideRegex);
             if (match && match[1]) {
                 const potentialWorkspace = match[1];
-                console.log(`[Slack Handler] Found potential manual override: "${potentialWorkspace}"`);
-                const availableWorkspaces = await getWorkspaces();
+                console.log(`[Slack Handler] Found potential manual override for NEW thread: "${potentialWorkspace}"`);
+                const availableWorkspaces = await getWorkspaces(); // Use existing workspace fetch
                 if (availableWorkspaces.includes(potentialWorkspace)) {
-                    sphere = potentialWorkspace;
-                    workspaceSource = 'ManualOverride';
-                    console.log(`[Slack Handler] Manual workspace override confirmed: "${sphere}". Query remains: "${cleanedQuery}"`);
-               } else {
-                    console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not an available workspace. Defaulting to 'all'.`);
-                    // Sphere remains 'all' if override is invalid
+                    initialSphere = potentialWorkspace;
+                    console.log(`[Slack Handler] Manual workspace override confirmed for NEW thread: "${initialSphere}".`);
+                } else {
+                    console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not available. Defaulting new thread to 'all'.`);
                 }
             }
+            workspaceSlugForThread = initialSphere; // The sphere used for this thread
+
+            // 5c. Create new AnythingLLM thread
+            anythingLLMThreadSlug = await createNewAnythingLLMThread(workspaceSlugForThread);
+            if (!anythingLLMThreadSlug) {
+                throw new Error(`Failed to create a new AnythingLLM thread in workspace ${workspaceSlugForThread}.`);
+            }
+
+            // 5d. Store the new mapping in DB
+            await storeAnythingLLMThreadMapping(channel, replyTarget, workspaceSlugForThread, anythingLLMThreadSlug);
         }
 
-        // 5c. Dynamic Routing REMOVED - Sphere remains default ('all') if not overridden
-        console.log(`[Slack Handler] Final Sphere determined: ${sphere} (Source: ${workspaceSource})`);
+        // --- End Sphere/Thread Determination ---
 
-        // --- End Sphere Determination ---
-
-        // 6. Update Thinking Message with Sphere (if not default 'all')
+        // 6. Update Thinking Message (Optional: Could show sphere/thread)
         try {
-            let thinkingText = ":hourglass_flowing_sand: Thinking";
-            if (sphere !== 'all') {
-                thinkingText += ` in sphere [${sphere}]`;
-            }
+            let thinkingText = ":hourglass_flowing_sand: Thinking in [${workspaceSlugForThread}]";
+            // Optional: Add thread slug if desired, might be noisy: thinkingText += ` (Thread: ${anythingLLMThreadSlug.substring(0, 8)}...)`; 
             thinkingText += "...";
             await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
-            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: "${thinkingText}"`);
+            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs})`);
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
 
-        // 7. Fetch History **ONLY if in a thread** (and not skipped by reset)
-        let conversationHistory = "";
-        if (!skipHistory && threadTs) { 
-            console.log("[Slack Handler] Fetching history for LLM context (message is in a thread)...");
-            conversationHistory = await fetchConversationHistory(channel, threadTs, originalTs, isDM);
-        } else {
-            if (!threadTs) {
-                 console.log("[Slack Handler] Skipping history fetch: Message is not in a thread.");
-            }
-        }
+        // 7. Fetch History (REMOVED - No longer needed)
 
-        // 8. Construct Final LLM Input (Include history only if it was fetched)
-        let llmInputText = "";
-        if (conversationHistory) { // Check if history string is non-empty
-            llmInputText += conversationHistory.trim() + "\n\nBased on the conversation history above...\n";
-            console.log(`[Slack Handler] Including history in final prompt.`);
-        } else {
-             console.log("[Slack Handler] No history included in final prompt (either skipped by reset or none found).");
-        }
-        llmInputText += `User Query: ${cleanedQuery}\n\n`; // Add double newline
-        // Add formatting instruction for the LLM
-        llmInputText += 'IMPORTANT: Format any code examples using standard Markdown triple backticks, ideally with a language identifier (e.g., ```python ... ```).';
-        llmInputText += `\n\n`;
-        console.log(`[Slack Handler] Sending input to LLM Sphere ${sphere}...`);
+        // 8. Construct Final LLM Input (REMOVED - Now just the query)
+        const llmInputText = cleanedQuery; // Only the current query is needed
+        console.log(`[Slack Handler] Sending query to AnythingLLM Thread ${workspaceSlugForThread}:${anythingLLMThreadSlug}...`);
 
-        // 9. Query LLM (Renumbered from 8)
+        // 9. Query LLM using the thread endpoint
         const llmStartTime = Date.now();
-        const rawReply = await queryLlm(sphere, llmInputText, userId);
+        const rawReply = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, llmInputText);
         console.log(`[Slack Handler] LLM call duration: ${Date.now() - llmStartTime}ms`);
-
-        if (!rawReply) {
-            throw new Error('LLM returned empty response.');
-        }
-
-        // 10. Format and Send Response
+        if (!rawReply) throw new Error('LLM returned empty response.');
         console.log("[Slack Handler Debug] Raw LLM Reply:\n", rawReply); // Log raw reply
+
+        // 10. Format and Send Response (Existing logic for formatting/chunking)
         const slackFormattedReply = formatSlackMessage(rawReply);
         console.log("[Slack Handler Debug] Formatted Reply (via slackifyMarkdown):\n", slackFormattedReply); // Log formatted reply
-
-        // --- Smarter Check for Substantive Response ---
-        let isSubstantiveResponse = true; // Assume substantive initially
+        
+        // Check for Substantive Response (Keep this logic)
+        let isSubstantiveResponse = true; 
         const lowerRawReply = rawReply.toLowerCase().trim();
         const nonSubstantivePatterns = [
             'sorry', 'cannot', 'unable', "don't know", "do not know", 'no information',
@@ -273,7 +222,6 @@ async function handleSlackMessageEventInternal(event) {
                 break; // Found a match, no need to check further
             }
         }
-        // --- End Substantive Check ---
 
         const messageChunks = splitMessageIntoChunks(slackFormattedReply, MAX_SLACK_BLOCK_TEXT_LENGTH);
         console.log(`[Slack Handler] Response split into ${messageChunks.length} chunk(s). Substantive: ${isSubstantiveResponse}`);
@@ -283,12 +231,12 @@ async function handleSlackMessageEventInternal(event) {
             const isLastChunk = i === messageChunks.length - 1;
             const currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
 
-            // Add divider and feedback buttons ONLY to the last chunk AND if response is substantive
+            // Add feedback buttons (use workspaceSlugForThread in block_id)
             if (isLastChunk && isSubstantiveResponse) { 
                 console.log("[Slack Handler] Adding feedback buttons to substantive response.");
                 currentBlocks.push({ "type": "divider" });
                 currentBlocks.push({
-                    "type": "actions", "block_id": `feedback_${originalTs}_${sphere}`,
+                    "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`,
                     "elements": [
                         { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
                         { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
@@ -298,11 +246,9 @@ async function handleSlackMessageEventInternal(event) {
             }
 
             try {
-                // Post chunks. NOTE: Non-streaming means we post all chunks after getting full LLM response.
-                // All chunks are posted as new messages in the replyTarget thread.
                  await slack.chat.postMessage({
                      channel: channel,
-                     thread_ts: replyTarget, // Thread all response parts to the original context
+                     thread_ts: replyTarget, // Always reply to the correct Slack thread
                      text: chunk, // Fallback text
                      blocks: currentBlocks
                  });
@@ -310,7 +256,7 @@ async function handleSlackMessageEventInternal(event) {
             } catch (postError) {
                  console.error(`[Slack Error] Failed post chunk ${i + 1}:`, postError.data?.error || postError.message);
                  await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${i + 1} of the response)_` }).catch(()=>{});
-                 break; // Stop sending further chunks
+                 break; 
             }
         }
 
@@ -318,11 +264,11 @@ async function handleSlackMessageEventInternal(event) {
         // 11. Handle Errors
         console.error('[Slack Handler Error]', error);
         try {
-            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `⚠️ Oops! I encountered an error processing your request. (Sphere: ${sphere})` });
+            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `⚠️ Oops! I encountered an error processing your request. (Workspace: ${workspaceSlugForThread || 'unknown'})` });
         } catch (slackError) { console.error("[Slack Error] Failed post error message:", slackError.data?.error || slackError.message); }
 
     } finally {
-        // 12. Cleanup Thinking Message
+        // 12. Cleanup Thinking Message (Keep this)
         if (thinkingMessageTs) {
             try {
                 await slack.chat.delete({ channel: channel, ts: thinkingMessageTs });
