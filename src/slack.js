@@ -166,9 +166,9 @@ async function handleSlackMessageEventInternal(event) {
             } catch(redisError) { console.error(`[Redis Error] Failed check/delete reset flag ${resetKey}:`, redisError); }
         }
 
-        // 5. Determine Target Sphere (Thread Cache -> Manual Override -> Dynamic Routing)
-        let conversationHistory = "";
-        let workspaceSource = 'DefaultAll'; // Updated default source name
+        // 5. Determine Target Sphere (Thread Cache -> Manual Override -> Default 'all')
+        // History fetching is removed here as it was only for dynamic routing
+        let workspaceSource = 'DefaultAll';
 
         // 5a. Check Thread Workspace Cache
         if (threadTs && isRedisReady) { // Only cache for threads
@@ -178,56 +178,37 @@ async function handleSlackMessageEventInternal(event) {
                     sphere = cachedSphere;
                     workspaceSource = 'ThreadCache';
                     console.log(`[Slack Handler] Using cached workspace "${sphere}" for thread ${threadTs}.`);
-                    // If using cached workspace, we assume history is implicitly handled by thread context
-                    skipHistory = true; // Don't fetch history again if we have thread context
+                    // If using cached workspace, we don't need history for the prompt
+                    skipHistory = true;
                 }
             } catch (err) { console.error(`[Redis Error] Failed get thread workspace cache ${threadWorkspaceKey}:`, err); }
         }
 
         // 5b. Check for Manual Workspace Override (if not using thread cache)
         if (workspaceSource === 'DefaultAll') {
-            // Use regex to find the first occurrence of # followed by non-space characters
             const overrideRegex = /#(\S+)/;
             const match = cleanedQuery.match(overrideRegex);
-
-            if (match && match[1]) { // If regex match is found
+            if (match && match[1]) {
                 const potentialWorkspace = match[1];
                 console.log(`[Slack Handler] Found potential manual override: "${potentialWorkspace}"`);
-
-                const availableWorkspaces = await getWorkspaces(); // Get list to validate against
+                const availableWorkspaces = await getWorkspaces();
                 if (availableWorkspaces.includes(potentialWorkspace)) {
                     sphere = potentialWorkspace;
-                    // Remove the matched override tag (e.g., "#gf-stripe") from the query string
-                    // cleanedQuery = cleanedQuery.replace(match[0], '').trim(); // --- Keep the tag in the query
+                    // Keep the tag in the query as per previous request
+                    // cleanedQuery = cleanedQuery.replace(match[0], '').trim();
                     workspaceSource = 'ManualOverride';
-                    skipHistory = true; // Manual override implies user wants specific context now
-                    console.log(`[Slack Handler] Manual workspace override confirmed: "${sphere}". Query remains: "${cleanedQuery}"`); // Updated log
+                    skipHistory = true; // Manual override implies specific context, skip history
+                    console.log(`[Slack Handler] Manual workspace override confirmed: "${sphere}". Query remains: "${cleanedQuery}"`);
                } else {
-                    // Log if the specified workspace doesn't exist, but continue (will likely use dynamic routing or default)
-                    console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not an available workspace. Ignoring.`);
+                    console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not an available workspace. Defaulting to 'all'.`);
+                    // Sphere remains 'all' if override is invalid
                 }
             }
         }
 
-        // 5c. Dynamic Routing (if no cache or override)
-        if (workspaceSource === 'DefaultAll') {
-            console.log(`[Slack Handler] No thread cache or manual override. Proceeding with history fetch and dynamic routing...`);
-            // Fetch history only if needed for routing & not explicitly skipped
-            if (!skipHistory) {
-                conversationHistory = await fetchConversationHistory(channel, threadTs, originalTs, isDM);
-            }
-            sphere = await decideSphere(cleanedQuery, conversationHistory);
-            workspaceSource = 'DynamicRouting';
-            console.log(`[Slack Handler] Dynamically decided Sphere: ${sphere}`);
+        // 5c. Dynamic Routing REMOVED - Sphere remains default ('all') if not overridden
+        console.log(`[Slack Handler] Final Sphere determined: ${sphere} (Source: ${workspaceSource})`);
 
-             // Cache the decided sphere for the thread if dynamic routing was used AND it's not the default 'all'
-             if (threadTs && isRedisReady && sphere !== 'all') { // Condition changed from 'public' to 'all'
-                 try {
-                     await redisClient.set(threadWorkspaceKey, sphere, { EX: THREAD_WORKSPACE_TTL });
-                     console.log(`[Slack Handler] Cached workspace "${sphere}" for thread ${threadTs} (TTL: ${THREAD_WORKSPACE_TTL}s).`);
-                 } catch (err) { console.error(`[Redis Error] Failed set thread workspace cache ${threadWorkspaceKey}:`, err); }
-             }
-        }
         // --- End Sphere Determination ---
 
         // 6. Update Thinking Message with Sphere
@@ -235,14 +216,9 @@ async function handleSlackMessageEventInternal(event) {
             await slack.chat.update({ channel, ts: thinkingMessageTs, text: `:hourglass_flowing_sand: Thinking in sphere [${sphere}]...` });
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
 
-        // 7. Construct Final LLM Input
-        let llmInputText = "";
-        if (conversationHistory && !skipHistory && workspaceSource === 'DynamicRouting') {
-            // Only include explicitly fetched history if routing decided it was necessary
-            llmInputText += conversationHistory.trim() + "\n\nBased on the conversation history above...\n";
-            console.log(`[Slack Handler] Including history in final prompt.`); // Simplified log
-        }
-        llmInputText += `User Query: ${cleanedQuery}`;
+        // 7. Construct Final LLM Input (No history included by default now)
+        let llmInputText = `User Query: ${cleanedQuery}`;
+        console.log(`[Slack Handler] Sending input to LLM Sphere ${sphere} (No history included)`);
 
         // 8. Query LLM
         const llmStartTime = Date.now();
