@@ -234,7 +234,7 @@ async function handleSlackMessageEventInternal(event) {
         }
         llmInputText += `User Query: ${cleanedQuery}\n\n`; // Add double newline
         // Add formatting instruction for the LLM
-        llmInputText += `IMPORTANT: Format any code examples using standard Markdown triple backticks, ideally with a language identifier (e.g., \`\`\`python ... \`\`\`).`;
+        llmInputText += 'IMPORTANT: Format any code examples using standard Markdown triple backticks, ideally with a language identifier (e.g., ```python ... ```).';
         llmInputText += `\n\n`;
         console.log(`[Slack Handler] Sending input to LLM Sphere ${sphere}...`);
 
