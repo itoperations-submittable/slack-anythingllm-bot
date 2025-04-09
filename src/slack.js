@@ -120,16 +120,21 @@ async function handleSlackMessageEventInternal(event) {
     // 2. Reset Command (Commented out, no longer needed for history)
     // if (originalText.toLowerCase() === RESET_CONVERSATION_COMMAND) { ... return; }
 
-    // 3. Post Initial Processing Message
+    // 3. Post Initial Processing Message (Asynchronously)
     let thinkingMessageTs = null;
-    try {
-        const initialMsg = await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: ":hourglass_flowing_sand: Processing..." });
+    // Create a promise for the thinking message but don't await it yet
+    const thinkingMessagePromise = slack.chat.postMessage({ 
+        channel, 
+        thread_ts: replyTarget, 
+        text: ":hourglass_flowing_sand: Processing..." 
+    }).then(initialMsg => {
         thinkingMessageTs = initialMsg.ts;
         console.log(`[Slack Handler] Posted initial thinking message (ts: ${thinkingMessageTs}).`);
-    } catch (slackError) {
-         console.error("[Slack Error] Failed post initial thinking message:", slackError.data?.error || slackError.message);
-         return;
-    }
+        return thinkingMessageTs;
+    }).catch(slackError => {
+        console.error("[Slack Error] Failed post initial thinking message:", slackError.data?.error || slackError.message);
+        return null;
+    });
 
     // --- Main Processing Logic ---
     let anythingLLMThreadSlug = null;
@@ -165,34 +170,39 @@ async function handleSlackMessageEventInternal(event) {
             await storeAnythingLLMThreadMapping(channel, replyTarget, workspaceSlugForThread, anythingLLMThreadSlug);
         }
 
-        // 6. Update Thinking Message (Random theme)
-        try {
-            const thinkingMessages = [
-                ":rocket: Blasting off to knowledge orbit...",
-                ":alien: Consulting my alien overlords...",
-                ":milky_way: Searching the cosmic database...",
-                ":satellite: Sending signals to distant star systems...",
-                ":ringed_planet: Circling Saturn for answers...",
-                ":full_moon: Moonwalking through data...",
-                ":dizzy: Getting lost in a black hole of information...",
-                ":flying_saucer: Abducting relevant facts...",
-                ":astronaut: Spacewalking through code repositories...",
-                ":stars: Counting stars while the database loads...",
-                ":rocket: Houston, we're solving a problem...",
-                ":comet: Riding this comet to find your answer...",
-                ":telescope: Peering into the knowledge universe...",
-                ":robot_face: Engaging hyperdrive processors...",
-                ":shooting_star: Wishing upon a star for good results...",
-                ":new_moon: That's no moon, it's a data station...",
-                ":sun_with_face: Harvesting solar energy for processing power...",
-                ":space_invader: Zapping knowledge barriers...",
-                ":satellite_antenna: Receiving signals from mission control...",
-                ":meteor: Entering knowledge atmosphere at high velocity..."
-            ];
-            const thinkingText = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
-            await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
-            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: "${thinkingText}"`);
-        } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
+        // 6. Update Thinking Message (Random theme) if it's ready
+        // Check if the thinking message was successfully posted before updating it
+        const messageTs = await thinkingMessagePromise;
+        if (messageTs) {
+            thinkingMessageTs = messageTs; // Ensure the variable is set for later cleanup
+            try {
+                const thinkingMessages = [
+                    ":rocket: Blasting off to knowledge orbit...",
+                    ":alien: Consulting my alien overlords...",
+                    ":milky_way: Searching the cosmic database...",
+                    ":satellite: Sending signals to distant star systems...",
+                    ":ringed_planet: Circling Saturn for answers...",
+                    ":full_moon: Moonwalking through data...",
+                    ":dizzy: Getting lost in a black hole of information...",
+                    ":flying_saucer: Abducting relevant facts...",
+                    ":astronaut: Spacewalking through code repositories...",
+                    ":stars: Counting stars while the database loads...",
+                    ":rocket: Houston, we're solving a problem...",
+                    ":comet: Riding this comet to find your answer...",
+                    ":telescope: Peering into the knowledge universe...",
+                    ":robot_face: Engaging hyperdrive processors...",
+                    ":shooting_star: Wishing upon a star for good results...",
+                    ":new_moon: That's no moon, it's a data station...",
+                    ":sun_with_face: Harvesting solar energy for processing power...",
+                    ":space_invader: Zapping knowledge barriers...",
+                    ":satellite_antenna: Receiving signals from mission control...",
+                    ":meteor: Entering knowledge atmosphere at high velocity..."
+                ];
+                const thinkingText = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
+                await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
+                console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: "${thinkingText}"`);
+            } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
+        }
 
         // 8. Construct LLM Input (Just the query)
         const llmInputText = cleanedQuery;
