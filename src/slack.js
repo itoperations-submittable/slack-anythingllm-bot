@@ -178,11 +178,22 @@ async function handleSlackMessageEventInternal(event) {
 
         // --- End Sphere/Thread Determination ---
 
-        // 6. Update Thinking Message (Reverted to simple message)
+        // 6. Update Thinking Message (Random space theme)
         try {
-            let thinkingText = ":hourglass_flowing_sand: Thinking..."; 
+            // **CORRECTED**: Array of themed messages with correct string literals
+            const thinkingMessages = [
+                ":satellite_antenna: Calculating trajectory...",
+                ":telescope: Aligning knowledge spheres...",
+                ":milky_way: Consulting the nebula...",
+                ":rocket: Charting course through data streams...",
+                ":ringed_planet: Processing orbital query...",
+                ":comet: Processing...",
+                ":black_hole: Analyzing singularity...",
+                ":star2: Gathering starlight data..."
+            ];
+            const thinkingText = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)]; 
             await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
-            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs})`);
+            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: \"${thinkingText}\"`); // Log the chosen message
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
 
         // 7. Fetch History (REMOVED - No longer needed)
