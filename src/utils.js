@@ -74,10 +74,18 @@ export function splitMessageIntoChunks(text, maxLength) {
 
 // --- Slack Markdown Conversion ---
 export function formatSlackMessage(rawText) {
+     if (!rawText) return ''; // Handle empty input
+
+     // Pre-process: Remove language identifiers from code blocks for better slackify-markdown compatibility
+     // Looks for ``` followed by word characters and a newline, replaces with ``` and a newline.
+     const processedText = rawText.replace(/^```(\w+)\n/gm, '```\n');
+
      try {
-         return slackifyMarkdown(rawText);
+         // Convert the potentially modified Markdown to Slack mrkdwn
+         return slackifyMarkdown(processedText);
      } catch (conversionError) {
-         console.error("[Utils] Error converting response with slackify-markdown, using raw reply:", conversionError);
-         return rawText; // Return raw text if conversion fails
+         console.error("[Utils] Error converting response with slackify-markdown, using processed text:", conversionError);
+         // Fallback to processed text if slackify fails (still better than raw potentially)
+         return processedText;
      }
 }
