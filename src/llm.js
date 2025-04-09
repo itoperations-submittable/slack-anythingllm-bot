@@ -119,8 +119,11 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText) {
          throw new Error('Internal error: Missing AnythingLLM thread slug.');
     }
     
+    // Add instruction to not include context references in the response
+    const enhancedInputText = `${inputText}\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations.`;
+    
     const requestBody = {
-        message: inputText, // Only send the current message
+        message: enhancedInputText, // Send enhanced message with instruction
         mode: 'chat' // Changed from 'query' to 'chat' for more conversational responses
     };
 
