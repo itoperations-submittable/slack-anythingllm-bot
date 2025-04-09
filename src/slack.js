@@ -167,25 +167,26 @@ async function handleSlackMessageEventInternal(event) {
         // 6. Update Thinking Message (Random theme)
         try {
             const thinkingMessages = [
-                ":brain: Consulting my silicon brain cells...",
-                ":detective: Investigating the mysteries of knowledge...",
-                ":yarn: Untangling the threads of information...",
-                ":rocket: Pushing the boundaries of AI comprehension...",
-                ":ping_pong: Playing ping-pong with different ideas...",
-                ":shower: Having a shower thought moment...",
-                ":lab_coat: Mixing knowledge potions in my digital lab...",
-                ":face_with_monocle: Examining your question with my finest monocle...",
-                ":crystal_ball: Gazing into the crystal ball of data...",
-                ":weight_lifter: Lifting heavy facts for you...",
-                ":nerd_face: Activating nerd mode...",
-                ":compass: Finding the north of your question...",
-                ":ghost: Summoning the spirits of knowledge...",
-                ":farmer: Harvesting fresh insights from the data fields...",
-                ":technologist: Typing furiously at the speed of light...",
-                ":thinking_face: Hmm, let me think about that...",
-                ":musical_keyboard: Playing a symphony of algorithms...",
-                ":robot: Beep boop... processing...",
-                ":hourglass_flowing_sand: Time is an illusion, but your answer is coming soon..."
+                ":rocket: Blasting off to knowledge orbit...",
+                ":alien: Consulting my alien overlords...",
+                ":milky_way: Searching the cosmic database...",
+                ":satellite: Sending signals to distant star systems...",
+                ":ringed_planet: Circling Saturn for answers...",
+                ":full_moon: Moonwalking through data...",
+                ":dizzy: Getting lost in a black hole of information...",
+                ":flying_saucer: Abducting relevant facts...",
+                ":astronaut: Spacewalking through code repositories...",
+                ":stars: Counting stars while the database loads...",
+                ":rocket: Houston, we're solving a problem...",
+                ":comet: Riding this comet to find your answer...",
+                ":telescope: Peering into the knowledge universe...",
+                ":robot_face: Engaging hyperdrive processors...",
+                ":shooting_star: Wishing upon a star for good results...",
+                ":new_moon: That's no moon, it's a data station...",
+                ":sun_with_face: Harvesting solar energy for processing power...",
+                ":space_invader: Zapping knowledge barriers...",
+                ":satellite_antenna: Receiving signals from mission control...",
+                ":meteor: Entering knowledge atmosphere at high velocity..."
             ];
             const thinkingText = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
             await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
