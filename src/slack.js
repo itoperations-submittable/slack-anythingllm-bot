@@ -248,7 +248,9 @@ async function handleSlackMessageEventInternal(event) {
         }
 
         // 10. Format and Send Response
+        console.log("[Slack Handler Debug] Raw LLM Reply:\n", rawReply); // Log raw reply
         const slackFormattedReply = formatSlackMessage(rawReply);
+        console.log("[Slack Handler Debug] Formatted Reply (via slackifyMarkdown):\n", slackFormattedReply); // Log formatted reply
 
         // --- Smarter Check for Substantive Response ---
         let isSubstantiveResponse = true; // Assume substantive initially
