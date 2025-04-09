@@ -277,11 +277,17 @@ async function handleSlackMessageEventInternal(event) {
                     // Remove all escaped newlines from the text before setting it in blocks
                     textToSend = textToSend.replace(/\\n/g, '');
                     
-                    // Use a simpler block structure with unique block_id
-                    let currentBlocks = [{ 
-                        "type": "section", 
-                        "text": { "type": "mrkdwn", "text": textToSend },
-                        "block_id": `message_${Date.now()}_${j}`
+                    // Use rich_text blocks for full-width layout
+                    let currentBlocks = [{
+                        "type": "rich_text",
+                        "block_id": `message_${Date.now()}_${j}`,
+                        "elements": [{
+                            "type": "rich_text_section",
+                            "elements": [{ 
+                                "type": "text", 
+                                "text": textToSend 
+                            }]
+                        }]
                     }];
 
                     if (isLastChunkOfLastSegment && isSubstantiveResponse) {
@@ -379,11 +385,17 @@ async function handleSlackMessageEventInternal(event) {
                         // Remove all escaped newlines from the code before setting it in blocks
                         textToSend = textToSend.replace(/\\n/g, '');
                         
-                        // Use a simpler block structure with unique block_id
-                        let currentBlocks = [{ 
-                            "type": "section", 
-                            "text": { "type": "mrkdwn", "text": textToSend },
-                            "block_id": `code_${Date.now()}_${j}`
+                        // Use rich_text blocks for full-width layout
+                        let currentBlocks = [{
+                            "type": "rich_text",
+                            "block_id": `code_${Date.now()}_${j}`,
+                            "elements": [{
+                                "type": "rich_text_section",
+                                "elements": [{ 
+                                    "type": "text", 
+                                    "text": textToSend 
+                                }]
+                            }]
                         }];
 
                         if (isLastChunkOfLastSegment && isSubstantiveResponse) {
