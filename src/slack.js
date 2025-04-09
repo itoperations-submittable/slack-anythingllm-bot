@@ -360,4 +360,160 @@ async function handleSlackMessageEventInternal(event) {
         console.error("[Slack Handler] Error in main processing logic:", error);
         await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error processing response)_` }).catch(()=>{});
     }
+    finally {
+        if (thinkingMessageTs) {
+            try {
+                await slack.chat.delete({ channel: channel, ts: thinkingMessageTs });
+                console.log(`[Slack Handler] Deleted thinking message (ts: ${thinkingMessageTs}).`);
+            } catch (delErr) { console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message); }
+        }
+        const handlerEndTime = Date.now();
+        console.log(`[Slack Handler] Finished processing event for ${userId}. Total duration: ${handlerEndTime - handlerStartTime}ms`);
+    }
+}
+
+// --- Public Event Handler Wrapper --- (Handles deduplication and filtering)
+export async function handleSlackEvent(event, body) {
+    const eventId = body?.event_id || `no-id:${event.event_ts}`;
+    if (await isDuplicateRedis(eventId)) {
+         console.log(`[Slack Event Wrapper] Duplicate event skipped: ${eventId}`);
+         return;
+    }
+
+    const { subtype, user: messageUserId, channel: channelId, text = '' } = event;
+
+    // Filter out unwanted events
+    if ( subtype === 'bot_message' || subtype === 'message_deleted' || subtype === 'message_changed' ||
+         subtype === 'channel_join' || subtype === 'channel_leave' || subtype === 'thread_broadcast' ||
+         !messageUserId || !text || messageUserId === botUserId ) {
+        // console.log("[Slack Event Wrapper] Ignoring event subtype:", subtype || 'missing/invalid user/text');
+        return;
+    }
+
+    const isDM = channelId.startsWith('D');
+    const mentionString = `<@${botUserId}>`;
+    const wasMentioned = text.includes(mentionString);
+
+    if (isDM || wasMentioned) {
+        console.log(`[Slack Event Wrapper] Processing relevant event ID: ${eventId}`);
+        // Run the internal handler asynchronously, don't block the event ACK
+        handleSlackMessageEventInternal(event).catch(err => {
+            console.error("[Slack Event Wrapper] Unhandled Internal Handler Error, Event ID:", eventId, err);
+        });
+    } else {
+        // console.log("[Slack Event Wrapper] Ignoring non-mention/non-DM message, Event ID:", eventId);
+        return;
+    }
+}
+
+// --- Interaction Handler --- (Handles button clicks etc.)
+export async function handleInteraction(req, res) {
+    // IMPORTANT: Verify signature in production! (Middleware is recommended)
+    // https://api.slack.com/authentication/verifying-requests-from-slack
+    // For simplicity, we skip verification here, but log a warning.
+    console.warn("!!! Interaction signature verification is NOT IMPLEMENTED !!!");
+
+    let payload;
+    try {
+        // Slack sends payload in the body, URL-encoded
+        if (!req.body || !req.body.payload) {
+            throw new Error("Missing interaction payload");
+        }
+        payload = JSON.parse(req.body.payload);
+    } catch (e) {
+        console.error("Failed to parse interaction payload:", e);
+        return res.status(400).send('Invalid payload');
+    }
+
+    // Acknowledge the interaction immediately (within 3 seconds)
+    res.send();
+
+    // Process the interaction asynchronously
+    try {
+        console.log("[Interaction Handler] Received type:", payload.type);
+        if (payload.type === 'block_actions' && payload.actions?.[0]) {
+            const action = payload.actions[0];
+            const { action_id: actionId, block_id: blockId } = action;
+            const { id: userId } = payload.user;
+            const { id: channelId } = payload.channel;
+            const { ts: messageTs } = payload.message; // TS of the message containing the button
+
+            // Handle Feedback Buttons
+            if (actionId.startsWith('feedback_')) {
+                const feedbackValue = action.value; // 'bad', 'ok', or 'great'
+                let originalQuestionTs = null;
+                let responseSphere = null;
+
+                // Extract original message TS and sphere from block_id
+                if (blockId?.startsWith('feedback_')) {
+                    const parts = blockId.substring(9).split('_'); // Remove 'feedback_'
+                    originalQuestionTs = parts[0];
+                    if (parts.length > 1) {
+                        responseSphere = parts.slice(1).join('_'); // Handle spheres with underscores
+                    }
+                }
+                console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}`);
+
+                // Attempt to fetch original user message text for context (optional but useful)
+                let originalQuestionText = null;
+                 if (originalQuestionTs && channelId) {
+                     try {
+                         const historyResult = await slack.conversations.history({
+                             channel: channelId,
+                             latest: originalQuestionTs,
+                             oldest: originalQuestionTs, // Fetch only the specific message
+                             inclusive: true,
+                             limit: 1
+                         });
+                         if (historyResult.ok && historyResult.messages?.[0]?.text) {
+                            originalQuestionText = historyResult.messages[0].text;
+                         } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
+                     } catch (historyError) {
+                         console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
+                     }
+                 }
+
+                 // Store the feedback (using the imported function)
+                 await storeFeedback({
+                     feedback_value: feedbackValue,
+                     user_id: userId,
+                     channel_id: channelId,
+                     bot_message_ts: messageTs, // TS of the bot's message with buttons
+                     original_user_message_ts: originalQuestionTs, // TS of the user's original query
+                     action_id: actionId,
+                     sphere_slug: responseSphere,
+                     bot_message_text: payload.message?.blocks?.[0]?.text?.text, // Text from the first block of bot message
+                     original_user_message_text: originalQuestionText
+                 });
+
+                 // Update the original message to show feedback was received
+                 try {
+                     // Reconstruct original blocks (assuming first block is text, second is divider, third is actions)
+                     const originalBlocks = payload.message.blocks;
+                     if (originalBlocks && originalBlocks.length >= 3) {
+                         const updatedBlocks = [
+                             originalBlocks[0], // Keep the original text block
+                             originalBlocks[1], // Keep the divider
+                             { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '��' : '👍'}_)` } ] }
+                         ];
+                         await slack.chat.update({
+                             channel: channelId,
+                             ts: messageTs,
+                             text: payload.message.text + "\n\n🙏 Thanks!", // Update fallback text
+                             blocks: updatedBlocks
+                         });
+                          console.log(`[Interaction Handler] Updated message ${messageTs} to reflect feedback.`);
+                     } else {
+                          console.warn("[Interaction Handler] Could not update feedback message - unexpected block structure.");
+                     }
+                 } catch (updateError) {
+                     console.warn("Failed to update feedback message:", updateError.data?.error || updateError.message);
+                 }
+            }
+            // Add other block action handlers here if needed...
+        }
+        // Add other interaction type handlers here (e.g., view_submission) if needed...
+    } catch (error) {
+        console.error("[Interaction Handling Error] An error occurred:", error);
+    }
 }
