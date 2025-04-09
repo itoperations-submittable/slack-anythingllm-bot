@@ -167,14 +167,25 @@ async function handleSlackMessageEventInternal(event) {
         // 6. Update Thinking Message (Random theme)
         try {
             const thinkingMessages = [
-                ":satellite_antenna: Calculating trajectory...",
-                ":telescope: Aligning knowledge spheres...",
-                ":milky_way: Consulting the nebula...",
-                ":rocket: Charting course through data streams...",
-                ":ringed_planet: Processing orbital query...",
-                ":comet: Processing...",
-                ":black_hole: Analyzing singularity...",
-                ":star2: Gathering starlight data..."
+                ":brain: Consulting my silicon brain cells...",
+                ":detective: Investigating the mysteries of knowledge...",
+                ":yarn: Untangling the threads of information...",
+                ":rocket: Pushing the boundaries of AI comprehension...",
+                ":ping_pong: Playing ping-pong with different ideas...",
+                ":shower: Having a shower thought moment...",
+                ":lab_coat: Mixing knowledge potions in my digital lab...",
+                ":face_with_monocle: Examining your question with my finest monocle...",
+                ":crystal_ball: Gazing into the crystal ball of data...",
+                ":weight_lifter: Lifting heavy facts for you...",
+                ":nerd_face: Activating nerd mode...",
+                ":compass: Finding the north of your question...",
+                ":ghost: Summoning the spirits of knowledge...",
+                ":farmer: Harvesting fresh insights from the data fields...",
+                ":technologist: Typing furiously at the speed of light...",
+                ":thinking_face: Hmm, let me think about that...",
+                ":musical_keyboard: Playing a symphony of algorithms...",
+                ":robot: Beep boop... processing...",
+                ":hourglass_flowing_sand: Time is an illusion, but your answer is coming soon..."
             ];
             const thinkingText = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
             await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });

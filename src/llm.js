@@ -121,7 +121,7 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText) {
     
     const requestBody = {
         message: inputText, // Only send the current message
-        mode: 'query' // Keep mode as query for Q&A
+        mode: 'chat' // Changed from 'query' to 'chat' for more conversational responses
     };
 
     console.log("[LLM Service/queryLlm] Request Body (Thread Chat):", JSON.stringify(requestBody, null, 2));
