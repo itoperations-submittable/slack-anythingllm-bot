@@ -217,7 +217,8 @@ async function handleSlackMessageEventInternal(event) {
         const segments = extractTextAndCode(rawReply);
         console.log(`[Slack Handler] Extracted ${segments.length} segments (text/code). Substantive: ${isSubstantiveResponse}`);
 
-        // *** ADDED LOG ***
+        // *** ADDED: Log substantive check result ***
+        console.log(`[Slack Handler DEBUG] isSubstantiveResponse = ${isSubstantiveResponse}`);
         console.log(`[Slack Handler DEBUG] Using replyTargetTS: ${replyTarget} for posting response.`);
 
         // 10c. Process and Send Each Segment
@@ -245,11 +246,16 @@ async function handleSlackMessageEventInternal(event) {
                 for (let j = 0; j < messageChunks.length; j++) {
                     const chunk = messageChunks[j];
                     const isLastChunkOfLastSegment = isLastSegment && (j === messageChunks.length - 1);
-                    let textToSend = isLastChunkOfLastSegment ? chunk.replace(/s+$/, '') : chunk;
+                    
+                    // *** MODIFIED: Use trimEnd() for final chunk ***
+                    let textToSend = isLastChunkOfLastSegment ? chunk.trimEnd() : chunk;
                     if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
+                    
                     let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
                     if (isLastChunkOfLastSegment && isSubstantiveResponse) {
+                        // *** ADDED: Log entering feedback block ***
+                        console.log("[Slack Handler DEBUG] Adding feedback buttons to text chunk.");
                         console.log("[Slack Handler] Adding feedback buttons to final text chunk.");
                         currentBlocks = currentBlocks.concat(feedbackBlock);
                     }
@@ -286,8 +292,10 @@ async function handleSlackMessageEventInternal(event) {
 
                         // Add feedback buttons *after* the file upload if it's the last segment
                         if (isLastSegment && isSubstantiveResponse) {
-                             console.log("[Slack Handler] Adding feedback buttons after final JSON snippet.");
-                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
+                            // *** ADDED: Log entering feedback block ***
+                            console.log("[Slack Handler DEBUG] Adding feedback buttons after JSON file.");
+                            console.log("[Slack Handler] Adding feedback buttons after final JSON snippet.");
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
                         }
                     } catch (uploadError) {
                         console.error(`[Slack Error] Failed upload JSON snippet:`, uploadError.data?.error || uploadError.message);
@@ -297,11 +305,13 @@ async function handleSlackMessageEventInternal(event) {
                         for(const fallbackChunk of fallbackChunks) {
                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackChunk });
                         } 
-                        // If fallback happens on the last segment, add feedback after the fallback text
-                         if (isLastSegment && isSubstantiveResponse) {
+                        // Add feedback buttons *after* the fallback post if it was the last segment
+                        if (isLastSegment && isSubstantiveResponse) {
+                            // *** ADDED: Log entering feedback block ***
+                            console.log("[Slack Handler DEBUG] Adding feedback buttons after JSON fallback.");
                             console.log("[Slack Handler] Adding feedback buttons after JSON upload fallback.");
                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
-                         }
+                        }
                     }
                 } else {
                     // --- Format Other Code Blocks Inline --- 
@@ -315,13 +325,18 @@ async function handleSlackMessageEventInternal(event) {
                     for (let j = 0; j < codeChunks.length; j++) {
                         const chunk = codeChunks[j];
                         const isLastChunkOfLastSegment = isLastSegment && (j === codeChunks.length - 1);
-                        let textToSend = isLastChunkOfLastSegment ? chunk.replace(/s+$/, '') : chunk;
+                        
+                        // *** MODIFIED: Use trimEnd() for final chunk ***
+                        let textToSend = isLastChunkOfLastSegment ? chunk.trimEnd() : chunk;
                         if (textToSend.length === 0 && !isLastChunkOfLastSegment) continue;
+                        
                         let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": textToSend } }];
 
                         if (isLastChunkOfLastSegment && isSubstantiveResponse) {
+                            // *** ADDED: Log entering feedback block ***
+                            console.log("[Slack Handler DEBUG] Adding feedback buttons to inline code chunk.");
                             console.log("[Slack Handler] Adding feedback buttons to final inline code chunk.");
-                             currentBlocks = currentBlocks.concat(feedbackBlock);
+                            currentBlocks = currentBlocks.concat(feedbackBlock);
                         }
 
                         try {
