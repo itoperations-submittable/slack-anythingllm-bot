@@ -22,68 +22,252 @@ export async function isDuplicateRedis(eventId) {
     }
 }
 
-// --- Message Splitting ---
+// --- Smart Message Splitting ---
 export function splitMessageIntoChunks(message, maxLength) {
+    if (!message) return [''];
+    
+    // If the message fits in one chunk, return it directly
+    if (message.length <= maxLength) {
+        return [message];
+    }
+    
     const chunks = [];
-    let currentChunk = '';
-
-    // Split message by lines first to avoid breaking mid-line potentially
-    const lines = message.split('\\n');
-
-    for (const line of lines) {
-        // Check if adding the next line exceeds maxLength
-        if (currentChunk.length + line.length + 1 <= maxLength) { // +1 for newline char
-            currentChunk += line + '\\n';
-        } else {
-            // If the current line itself is too long, split it
-            if (line.length > maxLength) {
-                // Push the previous chunk if it has content
-                if (currentChunk.trim().length > 0) {
-                    chunks.push(currentChunk.trim());
-                }
-                currentChunk = ''; // Reset chunk
-
-                // Split the long line
-                let remainingLine = line;
-                while (remainingLine.length > maxLength) {
-                    // Find the best split point (e.g., space) backwards from maxLength
-                    let splitPoint = remainingLine.lastIndexOf(' ', maxLength);
-                    // If no space found, force break at maxLength
-                    if (splitPoint === -1 || splitPoint === 0) {
-                       splitPoint = maxLength;
-                    }
-                    chunks.push(remainingLine.substring(0, splitPoint));
-                    remainingLine = remainingLine.substring(splitPoint).trimStart();
-                }
-                 // Add the rest of the split line as a new chunk potential
-                if (remainingLine.length > 0) {
-                    currentChunk = remainingLine + '\\n';
-                }
-
-            } else {
-                // The current line isn't too long itself, but adding it exceeds the limit
-                // Push the completed chunk and start a new one with the current line
-                if (currentChunk.trim().length > 0) {
-                     chunks.push(currentChunk.trim());
-                }
-                currentChunk = line + '\\n';
-            }
+    
+    // First, check for code blocks and preserve them
+    const codeBlockRegex = /```[\s\S]*?```/g;
+    const codeBlocks = [];
+    const textPieces = [];
+    let lastIndex = 0;
+    let match;
+    
+    // Extract code blocks and text pieces
+    while ((match = codeBlockRegex.exec(message)) !== null) {
+        const textBefore = message.substring(lastIndex, match.index).trim();
+        if (textBefore) {
+            textPieces.push({ type: 'text', content: textBefore });
+        }
+        
+        codeBlocks.push({ type: 'code', content: match[0] });
+        textPieces.push({ type: 'code', index: codeBlocks.length - 1 });
+        
+        lastIndex = match.index + match[0].length;
+    }
+    
+    // Add the last text piece if it exists
+    if (lastIndex < message.length) {
+        const finalText = message.substring(lastIndex).trim();
+        if (finalText) {
+            textPieces.push({ type: 'text', content: finalText });
         }
     }
-
-    // Add the last chunk if it has content
-    if (currentChunk.trim().length > 0) {
-        chunks.push(currentChunk.trim());
+    
+    // If there are no code blocks, use paragraph-based splitting
+    if (codeBlocks.length === 0) {
+        return splitTextByLogicalBreaks(message, maxLength);
     }
-
-    // Handle case where message was empty or only whitespace
-    if (chunks.length === 0 && message.trim().length === 0) {
-        return ['']; // Return a single empty chunk if input was effectively empty
+    
+    // Process text pieces and code blocks
+    let currentChunk = '';
+    const allPieces = textPieces;
+    
+    for (let i = 0; i < allPieces.length; i++) {
+        const piece = allPieces[i];
+        
+        if (piece.type === 'text') {
+            // For text pieces, split by paragraphs if needed
+            const textToAdd = piece.content;
+            
+            if (currentChunk.length + textToAdd.length <= maxLength) {
+                // Text fits in the current chunk
+                currentChunk += textToAdd;
+            } else if (textToAdd.length > maxLength) {
+                // Text is too long for a single chunk, needs its own splitting
+                if (currentChunk) {
+                    chunks.push(currentChunk);
+                    currentChunk = '';
+                }
+                
+                // Split the large text by paragraphs and logical breaks
+                const textChunks = splitTextByLogicalBreaks(textToAdd, maxLength);
+                chunks.push(...textChunks.slice(0, -1));
+                currentChunk = textChunks[textChunks.length - 1] || '';
+            } else {
+                // Text doesn't fit in current chunk but fits in its own chunk
+                chunks.push(currentChunk);
+                currentChunk = textToAdd;
+            }
+        } else if (piece.type === 'code') {
+            // For code blocks, try to keep them intact
+            const codeBlock = codeBlocks[piece.index];
+            
+            if (currentChunk.length + codeBlock.content.length <= maxLength) {
+                // Code block fits in current chunk
+                currentChunk += codeBlock.content;
+            } else {
+                // Start a new chunk for the code block
+                if (currentChunk) {
+                    chunks.push(currentChunk);
+                }
+                
+                if (codeBlock.content.length <= maxLength) {
+                    // Code block fits in its own chunk
+                    currentChunk = codeBlock.content;
+                } else {
+                    // Code block is too large for a single chunk
+                    // We still keep it intact but as its own chunk
+                    chunks.push(codeBlock.content);
+                    currentChunk = '';
+                }
+            }
+        }
+        
+        // Add a space between pieces
+        if (i < allPieces.length - 1 && currentChunk) {
+            currentChunk += ' ';
+        }
     }
-
+    
+    // Add the last chunk if not empty
+    if (currentChunk) {
+        chunks.push(currentChunk);
+    }
+    
+    // Add section indicators if there are multiple chunks
+    if (chunks.length > 1) {
+        return chunks.map((chunk, index) => {
+            // Only add section indicators to non-code chunks
+            if (!chunk.trim().startsWith('```')) {
+                return `[${index + 1}/${chunks.length}] ${chunk}`;
+            }
+            return chunk;
+        });
+    }
+    
     return chunks;
 }
 
+/**
+ * Helper function to split text by logical breaks like paragraphs and headings
+ */
+function splitTextByLogicalBreaks(text, maxLength) {
+    const chunks = [];
+    
+    // Identify logical break points (paragraphs, headings, lists)
+    const breakPatterns = [
+        /\n\s*\n/g,           // Double line breaks (paragraphs)
+        /\n#{1,6}\s+[^\n]+/g, // Markdown headings
+        /\n\s*[-*+]\s+/g,     // Unordered list items
+        /\n\s*\d+\.\s+/g,     // Ordered list items
+        /\n\s*>/g,            // Blockquotes
+    ];
+    
+    // Split by logical breaks first
+    const breakPoints = [];
+    breakPatterns.forEach(pattern => {
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            breakPoints.push(match.index);
+        }
+    });
+    
+    // Sort break points in ascending order
+    breakPoints.sort((a, b) => a - b);
+    
+    // If no break points found, fall back to character-based splitting
+    if (breakPoints.length === 0) {
+        return splitByCharCount(text, maxLength);
+    }
+    
+    // Split text using the identified break points
+    let startIndex = 0;
+    let currentChunk = '';
+    
+    for (let i = 0; i < breakPoints.length; i++) {
+        const breakPoint = breakPoints[i];
+        const nextSection = text.substring(startIndex, breakPoint + 1); // +1 to include the newline
+        
+        if (currentChunk.length + nextSection.length <= maxLength) {
+            currentChunk += nextSection;
+        } else {
+            // If the section doesn't fit, check if current chunk has content
+            if (currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+            }
+            
+            // Check if the next section is too large for a single chunk
+            if (nextSection.length > maxLength) {
+                // If a single section is too large, split it by character
+                const subChunks = splitByCharCount(nextSection, maxLength);
+                chunks.push(...subChunks.slice(0, -1));
+                currentChunk = subChunks[subChunks.length - 1] || '';
+            } else {
+                currentChunk = nextSection;
+            }
+        }
+        
+        startIndex = breakPoint + 1;
+    }
+    
+    // Add the final section
+    if (startIndex < text.length) {
+        const finalSection = text.substring(startIndex);
+        
+        if (currentChunk.length + finalSection.length <= maxLength) {
+            currentChunk += finalSection;
+        } else {
+            if (currentChunk.length > 0) {
+                chunks.push(currentChunk.trim());
+            }
+            
+            if (finalSection.length > maxLength) {
+                chunks.push(...splitByCharCount(finalSection, maxLength));
+                currentChunk = '';
+            } else {
+                currentChunk = finalSection;
+            }
+        }
+    }
+    
+    // Add the last chunk if it's not empty
+    if (currentChunk.length > 0) {
+        chunks.push(currentChunk.trim());
+    }
+    
+    return chunks;
+}
+
+/**
+ * Helper function to split text by character count as a last resort
+ */
+function splitByCharCount(text, maxLength) {
+    const chunks = [];
+    let remainingText = text;
+    
+    while (remainingText.length > 0) {
+        if (remainingText.length <= maxLength) {
+            chunks.push(remainingText);
+            break;
+        }
+        
+        // Try to find a natural break point (space, period, etc.)
+        let splitPoint = remainingText.lastIndexOf(' ', maxLength);
+        if (splitPoint === -1 || splitPoint < maxLength / 2) {
+            // If no good break point, try punctuation
+            const punctuation = remainingText.substring(0, maxLength).search(/[.!?;:,]\s/);
+            if (punctuation !== -1 && punctuation > maxLength / 2) {
+                splitPoint = punctuation + 1; // Include the punctuation
+            } else {
+                // If still no good break, just split at max length
+                splitPoint = maxLength;
+            }
+        }
+        
+        chunks.push(remainingText.substring(0, splitPoint).trim());
+        remainingText = remainingText.substring(splitPoint).trim();
+    }
+    
+    return chunks;
+}
 
 // --- Text and Code Extraction ---
 
