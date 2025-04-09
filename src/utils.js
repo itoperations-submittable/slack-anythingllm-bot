@@ -184,11 +184,23 @@ export function getSlackFiletype(language) {
 export function formatSlackMessage(textSegment) {
      if (!textSegment) return '';
 
-     // We assume code blocks have already been extracted.
-     // This simplified version focuses on lists, bold, italics etc.
      try {
-         // Convert the Markdown text segment to Slack mrkdwn
-         return slackifyMarkdown(textSegment);
+         // STEP 1: Pre-process to remove language identifiers from code blocks
+         // This helps slackify-markdown to properly handle code blocks
+         let processedText = textSegment.replace(/^```(\w+)\n/gm, '```\n');
+         
+         // STEP 2: Add proper spacing around code fences for better rendering
+         processedText = processedText.replace(/^```\n(?!\n)/gm, '```\n\n');
+         processedText = processedText.replace(/(?<!\n)\n```$/gm, '\n\n```');
+         
+         // STEP 3: Remove any escaped newlines that might be at the end
+         processedText = processedText.replace(/\\n\s*$/, '');
+         
+         // STEP 4: Remove any double-escaped newlines anywhere in the text
+         processedText = processedText.replace(/\\\\n/g, '');
+
+         // Convert the pre-processed Markdown text to Slack mrkdwn 
+         return slackifyMarkdown(processedText);
      } catch (conversionError) {
          console.error("[Utils] Error converting text segment with slackify-markdown, using original:", conversionError);
          // Fallback to the original text if slackify fails
