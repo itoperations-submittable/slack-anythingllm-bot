@@ -217,6 +217,9 @@ async function handleSlackMessageEventInternal(event) {
         const segments = extractTextAndCode(rawReply);
         console.log(`[Slack Handler] Extracted ${segments.length} segments (text/code). Substantive: ${isSubstantiveResponse}`);
 
+        // *** ADDED LOG ***
+        console.log(`[Slack Handler DEBUG] Using replyTargetTS: ${replyTarget} for posting response.`);
+
         // 10c. Process and Send Each Segment
         for (let i = 0; i < segments.length; i++) {
             const segment = segments[i];
