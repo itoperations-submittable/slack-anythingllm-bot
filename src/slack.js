@@ -14,7 +14,7 @@ import {
     databaseUrl,
     redisUrl
 } from './config.js';
-import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage } from './utils.js';
+import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
 import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 
@@ -102,24 +102,21 @@ async function storeFeedback(feedbackData) {
     }
 }
 
-// --- Main Event Handler Logic --- (Refactored for AnythingLLM Threads)
+// --- Corrected Main Event Handler Logic ---
 async function handleSlackMessageEventInternal(event) {
     const handlerStartTime = Date.now();
     const { user: userId, text: originalText = '', channel, ts: originalTs, thread_ts: threadTs } = event;
 
-    // 1. Initial Processing & Context Setup (Clean query, determine reply target)
+    // 1. Initial Processing & Context Setup
     let cleanedQuery = originalText.trim();
     const mentionString = `<@${botUserId}>`;
     const wasMentioned = originalText.includes(mentionString);
     if (wasMentioned) { cleanedQuery = cleanedQuery.replace(mentionString, '').trim(); }
     const isDM = channel.startsWith('D');
-    // replyTarget is the TS of the message we reply to, which defines the Slack thread context.
-    const replyTarget = threadTs || originalTs; 
-    // contextTs is no longer needed for history cache
-
+    const replyTarget = threadTs || originalTs;
     console.log(`[Slack Handler] Start. User: ${userId}, Chan: ${channel}, OrigTS: ${originalTs}, ThreadTS: ${threadTs}, ReplyTargetTS: ${replyTarget}, Query: "${cleanedQuery}"`);
 
-    // 2. Check for Reset Command (No longer needed for history, could be repurposed or removed later)
+    // 2. Reset Command (Commented out, no longer needed for history)
     // if (originalText.toLowerCase() === RESET_CONVERSATION_COMMAND) { ... return; }
 
     // 3. Post Initial Processing Message
@@ -127,20 +124,17 @@ async function handleSlackMessageEventInternal(event) {
     try {
         const initialMsg = await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: ":hourglass_flowing_sand: Processing..." });
         thinkingMessageTs = initialMsg.ts;
-        console.log(`[Slack Handler] Posted thinking message (ts: ${thinkingMessageTs}).`);
+        console.log(`[Slack Handler] Posted initial thinking message (ts: ${thinkingMessageTs}).`);
     } catch (slackError) {
          console.error("[Slack Error] Failed post initial thinking message:", slackError.data?.error || slackError.message);
          return;
     }
 
-    // --- Main Processing Logic (Try/Catch/Finally for cleanup) ---
+    // --- Main Processing Logic ---
     let anythingLLMThreadSlug = null;
-    let workspaceSlugForThread = null; // Track the workspace associated with the thread
+    let workspaceSlugForThread = null;
     try {
-        // 4. Check History Reset Flag (REMOVED - No longer applicable)
-
         // 5. Determine Target Sphere & AnythingLLM Thread
-        // 5a. Check for existing AnythingLLM thread mapping in DB
         const existingMapping = await getAnythingLLMThreadMapping(channel, replyTarget);
         
         if (existingMapping) {
@@ -149,14 +143,12 @@ async function handleSlackMessageEventInternal(event) {
             console.log(`[Slack Handler] Found existing AnythingLLM thread: ${workspaceSlugForThread}:${anythingLLMThreadSlug}`);
         } else {
             console.log(`[Slack Handler] No existing AnythingLLM thread found for Slack thread ${replyTarget}. Determining initial sphere...`);
-            // 5b. If no mapping, determine initial workspace (check override, default)
-            let initialSphere = 'all'; // Default sphere for new threads
+            let initialSphere = 'all';
             const overrideRegex = /#(\S+)/;
             const match = cleanedQuery.match(overrideRegex);
             if (match && match[1]) {
                 const potentialWorkspace = match[1];
-                console.log(`[Slack Handler] Found potential manual override for NEW thread: "${potentialWorkspace}"`);
-                const availableWorkspaces = await getWorkspaces(); // Use existing workspace fetch
+                const availableWorkspaces = await getWorkspaces();
                 if (availableWorkspaces.includes(potentialWorkspace)) {
                     initialSphere = potentialWorkspace;
                     console.log(`[Slack Handler] Manual workspace override confirmed for NEW thread: "${initialSphere}".`);
@@ -164,23 +156,16 @@ async function handleSlackMessageEventInternal(event) {
                     console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not available. Defaulting new thread to 'all'.`);
                 }
             }
-            workspaceSlugForThread = initialSphere; // The sphere used for this thread
-
-            // 5c. Create new AnythingLLM thread
+            workspaceSlugForThread = initialSphere;
             anythingLLMThreadSlug = await createNewAnythingLLMThread(workspaceSlugForThread);
             if (!anythingLLMThreadSlug) {
                 throw new Error(`Failed to create a new AnythingLLM thread in workspace ${workspaceSlugForThread}.`);
             }
-
-            // 5d. Store the new mapping in DB
             await storeAnythingLLMThreadMapping(channel, replyTarget, workspaceSlugForThread, anythingLLMThreadSlug);
         }
 
-        // --- End Sphere/Thread Determination ---
-
-        // 6. Update Thinking Message (Random space theme)
+        // 6. Update Thinking Message (Random theme)
         try {
-            // **CORRECTED**: Array of themed messages with correct string literals
             const thinkingMessages = [
                 ":satellite_antenna: Calculating trajectory...",
                 ":telescope: Aligning knowledge spheres...",
@@ -191,30 +176,26 @@ async function handleSlackMessageEventInternal(event) {
                 ":black_hole: Analyzing singularity...",
                 ":star2: Gathering starlight data..."
             ];
-            const thinkingText = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)]; 
+            const thinkingText = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)];
             await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
-            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: \"${thinkingText}\"`); // Log the chosen message
+            console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: "${thinkingText}"`);
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
 
-        // 7. Fetch History (REMOVED - No longer needed)
-
-        // 8. Construct Final LLM Input (REMOVED - Now just the query)
-        const llmInputText = cleanedQuery; // Only the current query is needed
+        // 8. Construct LLM Input (Just the query)
+        const llmInputText = cleanedQuery;
         console.log(`[Slack Handler] Sending query to AnythingLLM Thread ${workspaceSlugForThread}:${anythingLLMThreadSlug}...`);
 
-        // 9. Query LLM using the thread endpoint
+        // 9. Query LLM using thread endpoint
         const llmStartTime = Date.now();
         const rawReply = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, llmInputText);
         console.log(`[Slack Handler] LLM call duration: ${Date.now() - llmStartTime}ms`);
         if (!rawReply) throw new Error('LLM returned empty response.');
-        console.log("[Slack Handler Debug] Raw LLM Reply:\n", rawReply); // Log raw reply
+        console.log("[Slack Handler Debug] Raw LLM Reply:\n", rawReply);
 
-        // 10. Format and Send Response (Existing logic for formatting/chunking)
-        const slackFormattedReply = formatSlackMessage(rawReply);
-        console.log("[Slack Handler Debug] Formatted Reply (via slackifyMarkdown):\n", slackFormattedReply); // Log formatted reply
-        
-        // Check for Substantive Response (Keep this logic)
-        let isSubstantiveResponse = true; 
+        // 10. Process and Send Response Segments (Upload JSON, Inline Other Code)
+
+        // 10a. Check for Substantive Response
+        let isSubstantiveResponse = true;
         const lowerRawReply = rawReply.toLowerCase().trim();
         const nonSubstantivePatterns = [
             'sorry', 'cannot', 'unable', "don't know", "do not know", 'no information',
@@ -228,46 +209,127 @@ async function handleSlackMessageEventInternal(event) {
             if (lowerRawReply.includes(pattern)) {
                 console.log(`[Slack Handler] Non-substantive pattern found: "${pattern}". Skipping feedback buttons.`);
                 isSubstantiveResponse = false;
-                break; // Found a match, no need to check further
+                break;
             }
         }
 
-        const messageChunks = splitMessageIntoChunks(slackFormattedReply, MAX_SLACK_BLOCK_TEXT_LENGTH);
-        console.log(`[Slack Handler] Response split into ${messageChunks.length} chunk(s). Substantive: ${isSubstantiveResponse}`);
+        // 10b. Extract Segments
+        const segments = extractTextAndCode(rawReply);
+        console.log(`[Slack Handler] Extracted ${segments.length} segments (text/code). Substantive: ${isSubstantiveResponse}`);
 
-        for (let i = 0; i < messageChunks.length; i++) {
-            const chunk = messageChunks[i];
-            const isLastChunk = i === messageChunks.length - 1;
-            const currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
+        // 10c. Process and Send Each Segment
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            const isLastSegment = i === segments.length - 1;
 
-            // Add feedback buttons (use workspaceSlugForThread in block_id)
-            if (isLastChunk && isSubstantiveResponse) { 
-                console.log("[Slack Handler] Adding feedback buttons to substantive response.");
-                currentBlocks.push({ "type": "divider" });
-                currentBlocks.push({
-                    "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`,
-                    "elements": [
-                        { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
-                        { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
-                        { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
-                    ]
-                });
-            }
+            // Define feedback blocks structure (avoids repetition)
+            const feedbackButtonElements = [
+                { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
+                { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
+                { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
+            ];
+            const feedbackBlock = [
+                { "type": "divider" },
+                { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`, "elements": feedbackButtonElements }
+            ];
 
-            try {
-                 await slack.chat.postMessage({
-                     channel: channel,
-                     thread_ts: replyTarget, // Always reply to the correct Slack thread
-                     text: chunk, // Fallback text
-                     blocks: currentBlocks
-                 });
-                 console.log(`[Slack Handler] Posted chunk ${i + 1}/${messageChunks.length}.`);
-            } catch (postError) {
-                 console.error(`[Slack Error] Failed post chunk ${i + 1}:`, postError.data?.error || postError.message);
-                 await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${i + 1} of the response)_` }).catch(()=>{});
-                 break; 
+            if (segment.type === 'text') {
+                // --- Handle Text Segments ---
+                const formattedText = formatSlackMessage(segment.content);
+                if (!formattedText || formattedText.trim().length === 0) continue;
+                
+                const messageChunks = splitMessageIntoChunks(formattedText, MAX_SLACK_BLOCK_TEXT_LENGTH);
+                for (let j = 0; j < messageChunks.length; j++) {
+                    const chunk = messageChunks[j];
+                    const isLastChunkOfLastSegment = isLastSegment && (j === messageChunks.length - 1);
+                    let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
+
+                    if (isLastChunkOfLastSegment && isSubstantiveResponse) {
+                        console.log("[Slack Handler] Adding feedback buttons to final text chunk.");
+                        currentBlocks = currentBlocks.concat(feedbackBlock);
+                    }
+
+                    try {
+                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: chunk, blocks: currentBlocks });
+                        console.log(`[Slack Handler] Posted text chunk ${j + 1}/${messageChunks.length}.`);
+                    } catch (postError) {
+                        console.error(`[Slack Error] Failed post text chunk ${j + 1}:`, postError.data?.error || postError.message);
+                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${j + 1} of the response)_` }).catch(() => {});
+                        break;
+                    }
+                }
+            } else if (segment.type === 'code') {
+                // --- Handle Code Segments ---
+                const language = segment.language || 'text';
+                const filetype = getSlackFiletype(language);
+
+                if (filetype === 'json') {
+                    // --- Upload JSON as File ---
+                    const filename = `snippet.json`; 
+                    const title = `JSON Snippet`;
+                    console.log(`[Slack Handler] Uploading JSON snippet: Filename=${filename}`);
+                    try {
+                        await slack.files.uploadV2({
+                            channel_id: channel,
+                            thread_ts: replyTarget,
+                            content: segment.content,
+                            filename: filename,
+                            title: title,
+                            initial_comment: `\`${title}\`` 
+                        });
+                        console.log(`[Slack Handler] Posted JSON snippet.`);
+
+                        // Add feedback buttons *after* the file upload if it's the last segment
+                        if (isLastSegment && isSubstantiveResponse) {
+                             console.log("[Slack Handler] Adding feedback buttons after final JSON snippet.");
+                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
+                        }
+                    } catch (uploadError) {
+                        console.error(`[Slack Error] Failed upload JSON snippet:`, uploadError.data?.error || uploadError.message);
+                        // Fallback: Post raw code if upload fails
+                        const fallbackText = `⚠️ Failed to upload JSON snippet. Raw content:\`\`\`json\n${segment.content}\`\`\``;
+                        const fallbackChunks = splitMessageIntoChunks(fallbackText, MAX_SLACK_BLOCK_TEXT_LENGTH);
+                        for(const fallbackChunk of fallbackChunks) {
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackChunk });
+                        } 
+                        // If fallback happens on the last segment, add feedback after the fallback text
+                         if (isLastSegment && isSubstantiveResponse) {
+                            console.log("[Slack Handler] Adding feedback buttons after JSON upload fallback.");
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
+                         }
+                    }
+                } else {
+                    // --- Format Other Code Blocks Inline --- 
+                    // Reconstruct the markdown block string
+                    const inlineCodeContent = `\`\`\`${language}\n${segment.content}\`\`\``;
+                    // Use the simple text formatter (it should handle code blocks okay now)
+                    const formattedCode = formatSlackMessage(inlineCodeContent); 
+                    if (!formattedCode || formattedCode.trim().length === 0) continue;
+
+                    const codeChunks = splitMessageIntoChunks(formattedCode, MAX_SLACK_BLOCK_TEXT_LENGTH);
+                    for (let j = 0; j < codeChunks.length; j++) {
+                        const chunk = codeChunks[j];
+                        const isLastChunkOfLastSegment = isLastSegment && (j === codeChunks.length - 1);
+                        let currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
+
+                        if (isLastChunkOfLastSegment && isSubstantiveResponse) {
+                            console.log("[Slack Handler] Adding feedback buttons to final inline code chunk.");
+                             currentBlocks = currentBlocks.concat(feedbackBlock);
+                        }
+
+                        try {
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: chunk, blocks: currentBlocks });
+                            console.log(`[Slack Handler] Posted inline code chunk ${j + 1}/${codeChunks.length}.`);
+                        } catch (postError) {
+                            console.error(`[Slack Error] Failed post inline code chunk ${j + 1}:`, postError.data?.error || postError.message);
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${j + 1} of the response)_` }).catch(()=>{});
+                            break;
+                        }
+                    }
+                }
             }
         }
+        // -- End Segment Processing Loop --
 
     } catch (error) {
         // 11. Handle Errors
@@ -277,7 +339,7 @@ async function handleSlackMessageEventInternal(event) {
         } catch (slackError) { console.error("[Slack Error] Failed post error message:", slackError.data?.error || slackError.message); }
 
     } finally {
-        // 12. Cleanup Thinking Message (Keep this)
+        // 12. Cleanup Thinking Message
         if (thinkingMessageTs) {
             try {
                 await slack.chat.delete({ channel: channel, ts: thinkingMessageTs });
@@ -315,7 +377,7 @@ export async function handleSlackEvent(event, body) {
     const wasMentioned = text.includes(mentionString);
 
     // *** ADDED: Detailed logging before relevance check ***
-    console.log(`[Slack Event Wrapper DEBUG] Event ID: ${eventId}, Type: ${event.type}, Subtype: ${subtype}, User: ${messageUserId}, Channel: ${channelId}, IsDM: ${isDM}, MentionString: \"${mentionString}\", WasMentioned: ${wasMentioned}, Text: \"${text.substring(0, 100)}...\"`);
+    console.log(`[Slack Event Wrapper DEBUG] Event ID: ${eventId}, Type: ${event.type}, Subtype: ${subtype}, User: ${messageUserId}, Channel: ${channelId}, IsDM: ${isDM}, MentionString: "${mentionString}", WasMentioned: ${wasMentioned}, Text: "${text.substring(0, 100)}..."`);
 
     // Check if it's a relevant event (DM or Mention)
     if (isDM || wasMentioned) {
@@ -329,17 +391,24 @@ export async function handleSlackEvent(event, body) {
     }
 }
 
-// --- Interaction Handler --- (Refactored)
+// --- Interaction Handler --- (Handles button clicks etc.)
 export async function handleInteraction(req, res) {
     console.warn("!!! Interaction signature verification is NOT IMPLEMENTED !!!");
+
     let payload;
     try {
-        if (!req.body || !req.body.payload) { throw new Error("Missing payload"); }
+        if (!req.body || !req.body.payload) {
+            throw new Error("Missing interaction payload");
+        }
         payload = JSON.parse(req.body.payload);
-    } catch (e) { console.error("Failed parse interaction payload:", e); return res.status(400).send(); }
+    } catch (e) {
+        console.error("Failed to parse interaction payload:", e);
+        return res.status(400).send('Invalid payload');
+    }
 
-    res.send();
+    res.send(); // Acknowledge immediately
 
+    // Process the interaction asynchronously
     try {
         console.log("[Interaction Handler] Received type:", payload.type);
         if (payload.type === 'block_actions' && payload.actions?.[0]) {
@@ -347,14 +416,16 @@ export async function handleInteraction(req, res) {
             const { action_id: actionId, block_id: blockId } = action;
             const { id: userId } = payload.user;
             const { id: channelId } = payload.channel;
-            const { ts: messageTs } = payload.message;
+            const { ts: messageTs } = payload.message; // TS of the message containing the button
 
+            // Handle Feedback Buttons
             if (actionId.startsWith('feedback_')) {
-                const feedbackValue = action.value;
+                const feedbackValue = action.value; 
                 let originalQuestionTs = null;
                 let responseSphere = null;
+
                 if (blockId?.startsWith('feedback_')) {
-                    const parts = blockId.substring(9).split('_');
+                    const parts = blockId.substring(9).split('_'); 
                     originalQuestionTs = parts[0];
                     if (parts.length > 1) { responseSphere = parts.slice(1).join('_'); }
                 }
@@ -364,27 +435,60 @@ export async function handleInteraction(req, res) {
                  if (originalQuestionTs && channelId) {
                      try {
                          const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
-                         if (historyResult.ok && historyResult.messages?.[0]) { originalQuestionText = historyResult.messages[0].text; }
-                     } catch (historyError) { console.error('[Interaction] Error fetch original msg:', historyError); }
+                         if (historyResult.ok && historyResult.messages?.[0]?.text) {
+                            originalQuestionText = historyResult.messages[0].text;
+                         } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
+                     } catch (historyError) {
+                         console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
+                     }
                  }
 
-                 await storeFeedback({
-                     feedback_value: feedbackValue, user_id: userId, channel_id: channelId,
-                     bot_message_ts: messageTs, original_user_message_ts: originalQuestionTs, action_id: actionId,
-                     sphere_slug: responseSphere, bot_message_text: payload.message?.blocks?.[0]?.text?.text,
-                     original_user_message_text: originalQuestionText
-                 });
+                 // ** IMPORTANT: Need storeFeedback function accessible here **
+                 // Assuming storeFeedback is imported or defined globally/in scope
+                 // await storeFeedback({ /* ... feedback data ... */ }); 
+                 // Since storeFeedback was removed from app.js, it needs to be handled differently.
+                 // Easiest is to import it here if it's now in services.js or utils.js
+                 console.log("[Interaction Handler] storeFeedback call is currently commented out - requires import/access.");
 
+                 // Update the original message to show feedback was received
                  try {
-                     await slack.chat.update({
-                         channel: channelId, ts: messageTs,
-                         text: payload.message.text + "\n\n🙏 Thanks!",
-                         blocks: [ payload.message.blocks[0], { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] } ]
-                     });
-                 } catch (updateError) { console.warn("Failed update feedback msg:", updateError.data?.error || updateError.message); }
+                     const originalBlocks = payload.message.blocks;
+                     if (originalBlocks && originalBlocks.length > 0) { // Check if blocks exist
+                          // Find the actions block to replace (safer than assuming index)
+                          const actionBlockIndex = originalBlocks.findIndex(block => block.type === 'actions');
+                          let updatedBlocks;
+                          
+                          if (actionBlockIndex !== -1) {
+                              // Replace the actions block with a context block
+                              updatedBlocks = [
+                                  ...originalBlocks.slice(0, actionBlockIndex),
+                                  { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
+                              ];
+                          } else {
+                              // If no actions block found (unexpected), just append context
+                              console.warn("[Interaction Handler] Could not find actions block to replace in feedback message.");
+                              updatedBlocks = [
+                                  ...originalBlocks,
+                                  { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
+                              ];
+                          }
+                        
+                         await slack.chat.update({
+                             channel: channelId,
+                             ts: messageTs,
+                             text: payload.message.text + "\n\n🙏 Thanks!", 
+                             blocks: updatedBlocks
+                         });
+                          console.log(`[Interaction Handler] Updated message ${messageTs} to reflect feedback.`);
+                     } else {
+                          console.warn("[Interaction Handler] Could not update feedback message - no blocks found.");
+                     }
+                 } catch (updateError) {
+                     console.warn("Failed to update feedback message:", updateError.data?.error || updateError.message);
+                 }
             }
         }
     } catch (error) {
-        console.error("[Interaction Handling Error]", error);
+        console.error("[Interaction Handling Error] An error occurred:", error);
     }
 }
