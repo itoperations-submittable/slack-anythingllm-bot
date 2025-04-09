@@ -178,11 +178,9 @@ async function handleSlackMessageEventInternal(event) {
 
         // --- End Sphere/Thread Determination ---
 
-        // 6. Update Thinking Message (Optional: Could show sphere/thread)
+        // 6. Update Thinking Message (Reverted to simple message)
         try {
-            let thinkingText = ":hourglass_flowing_sand: Thinking in [${workspaceSlugForThread}]";
-            // Optional: Add thread slug if desired, might be noisy: thinkingText += ` (Thread: ${anythingLLMThreadSlug.substring(0, 8)}...)`; 
-            thinkingText += "...";
+            let thinkingText = ":hourglass_flowing_sand: Thinking..."; 
             await slack.chat.update({ channel, ts: thinkingMessageTs, text: thinkingText });
             console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs})`);
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
