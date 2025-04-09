@@ -114,8 +114,7 @@ async function handleSlackMessageEventInternal(event) {
     if (wasMentioned) { cleanedQuery = cleanedQuery.replace(mentionString, '').trim(); }
 
     const isDM = channel.startsWith('D');
-    const replyTarget = isDM ? undefined : (threadTs || originalTs);
-    // Use threadTs for context key if available, otherwise originalTs (for top-level DMs/mentions)
+    const replyTarget = threadTs || originalTs;
     const contextTs = threadTs || originalTs;
     const threadWorkspaceKey = `${THREAD_WORKSPACE_PREFIX}${channel}:${contextTs}`;
 
