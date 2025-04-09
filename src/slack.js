@@ -277,18 +277,34 @@ async function handleSlackMessageEventInternal(event) {
                     // Remove all escaped newlines from the text before setting it in blocks
                     textToSend = textToSend.replace(/\\n/g, '');
                     
-                    // Use rich_text blocks for full-width layout
-                    let currentBlocks = [{
-                        "type": "rich_text",
-                        "block_id": `message_${Date.now()}_${j}`,
-                        "elements": [{
-                            "type": "rich_text_section",
-                            "elements": [{ 
-                                "type": "text", 
-                                "text": textToSend 
+                    // Check if this is a code block
+                    const isCodeBlock = textToSend.includes('```');
+                    let currentBlocks;
+                    
+                    if (isCodeBlock) {
+                        // For code blocks, use rich_text with preformatted element
+                        // Extract code from markdown format
+                        const codeMatch = textToSend.match(/```(?:\w+)?\n([\s\S]*?)```/);
+                        const codeContent = codeMatch ? codeMatch[1] : textToSend;
+                        
+                        currentBlocks = [{
+                            "type": "rich_text",
+                            "block_id": `code_${Date.now()}_${j}`,
+                            "elements": [{
+                                "type": "rich_text_section",
+                                "elements": [{ 
+                                    "type": "text", 
+                                    "text": textToSend 
+                                }]
                             }]
-                        }]
-                    }];
+                        }];
+                    } else {
+                        // For regular text, use section with mrkdwn to preserve formatting
+                        currentBlocks = [{ 
+                            "type": "section", 
+                            "text": { "type": "mrkdwn", "text": textToSend }
+                        }];
+                    }
 
                     if (isLastChunkOfLastSegment && isSubstantiveResponse) {
                         // *** ADDED: Log entering feedback block ***
@@ -385,18 +401,34 @@ async function handleSlackMessageEventInternal(event) {
                         // Remove all escaped newlines from the code before setting it in blocks
                         textToSend = textToSend.replace(/\\n/g, '');
                         
-                        // Use rich_text blocks for full-width layout
-                        let currentBlocks = [{
-                            "type": "rich_text",
-                            "block_id": `code_${Date.now()}_${j}`,
-                            "elements": [{
-                                "type": "rich_text_section",
-                                "elements": [{ 
-                                    "type": "text", 
-                                    "text": textToSend 
+                        // Check if this is a code block
+                        const isCodeBlock = textToSend.includes('```');
+                        let currentBlocks;
+                        
+                        if (isCodeBlock) {
+                            // For code blocks, use rich_text with preformatted element
+                            // Extract code from markdown format
+                            const codeMatch = textToSend.match(/```(?:\w+)?\n([\s\S]*?)```/);
+                            const codeContent = codeMatch ? codeMatch[1] : textToSend;
+                            
+                            currentBlocks = [{
+                                "type": "rich_text",
+                                "block_id": `code_${Date.now()}_${j}`,
+                                "elements": [{
+                                    "type": "rich_text_section",
+                                    "elements": [{ 
+                                        "type": "text", 
+                                        "text": textToSend 
+                                    }]
                                 }]
-                            }]
-                        }];
+                            }];
+                        } else {
+                            // For regular text, use section with mrkdwn to preserve formatting
+                            currentBlocks = [{ 
+                                "type": "section", 
+                                "text": { "type": "mrkdwn", "text": textToSend }
+                            }];
+                        }
 
                         if (isLastChunkOfLastSegment && isSubstantiveResponse) {
                             // *** ADDED: Log entering feedback block ***
