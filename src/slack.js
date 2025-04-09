@@ -237,15 +237,38 @@ async function handleSlackMessageEventInternal(event) {
 
         // 9. Format and Send Response
         const slackFormattedReply = formatSlackMessage(rawReply);
+
+        // --- Smarter Check for Substantive Response ---
+        let isSubstantiveResponse = true; // Assume substantive initially
+        const lowerRawReply = rawReply.toLowerCase().trim();
+        const nonSubstantivePatterns = [
+            'sorry', 'cannot', 'unable', "don't know", "do not know", 'no information',
+            'how can i help', 'conversation reset', 'context will be ignored',
+            'hello', 'hi ', 'hey ', 'thanks', 'thank you',
+            'encountered an error'
+            // Add more patterns as needed
+        ];
+
+        for (const pattern of nonSubstantivePatterns) {
+            if (lowerRawReply.includes(pattern)) {
+                console.log(`[Slack Handler] Non-substantive pattern found: "${pattern}". Skipping feedback buttons.`);
+                isSubstantiveResponse = false;
+                break; // Found a match, no need to check further
+            }
+        }
+        // --- End Substantive Check ---
+
         const messageChunks = splitMessageIntoChunks(slackFormattedReply, MAX_SLACK_BLOCK_TEXT_LENGTH);
-        console.log(`[Slack Handler] Response split into ${messageChunks.length} chunk(s).`);
+        console.log(`[Slack Handler] Response split into ${messageChunks.length} chunk(s). Substantive: ${isSubstantiveResponse}`);
 
         for (let i = 0; i < messageChunks.length; i++) {
             const chunk = messageChunks[i];
             const isLastChunk = i === messageChunks.length - 1;
             const currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
 
-            if (isLastChunk) {
+            // Add divider and feedback buttons ONLY to the last chunk AND if response is substantive
+            if (isLastChunk && isSubstantiveResponse) { 
+                console.log("[Slack Handler] Adding feedback buttons to substantive response.");
                 currentBlocks.push({ "type": "divider" });
                 currentBlocks.push({
                     "type": "actions", "block_id": `feedback_${originalTs}_${sphere}`,
