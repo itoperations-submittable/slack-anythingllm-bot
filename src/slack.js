@@ -14,7 +14,7 @@ import {
     databaseUrl,
     redisUrl
 } from './config.js';
-import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage } from './utils.js';
+import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype } from './utils.js';
 import { redisClient, isRedisReady, dbPool } from './services.js';
 import { decideSphere, queryLlm, getWorkspaces } from './llm.js';
 
@@ -247,13 +247,10 @@ async function handleSlackMessageEventInternal(event) {
             throw new Error('LLM returned empty response.');
         }
 
-        // 10. Format and Send Response
-        console.log("[Slack Handler Debug] Raw LLM Reply:\n", rawReply); // Log raw reply
-        const slackFormattedReply = formatSlackMessage(rawReply);
-        console.log("[Slack Handler Debug] Formatted Reply (via slackifyMarkdown):\n", slackFormattedReply); // Log formatted reply
+        // 10. **NEW**: Process and Send Response Segments (Text and Code Snippets)
 
-        // --- Smarter Check for Substantive Response ---
-        let isSubstantiveResponse = true; // Assume substantive initially
+        // 10a. Check for Substantive Response (Existing logic, moved slightly)
+        let isSubstantiveResponse = true;
         const lowerRawReply = rawReply.toLowerCase().trim();
         const nonSubstantivePatterns = [
             'sorry', 'cannot', 'unable', "don't know", "do not know", 'no information',
@@ -270,46 +267,113 @@ async function handleSlackMessageEventInternal(event) {
                 break; // Found a match, no need to check further
             }
         }
-        // --- End Substantive Check ---
 
-        const messageChunks = splitMessageIntoChunks(slackFormattedReply, MAX_SLACK_BLOCK_TEXT_LENGTH);
-        console.log(`[Slack Handler] Response split into ${messageChunks.length} chunk(s). Substantive: ${isSubstantiveResponse}`);
+        // 10b. Extract Segments
+        const segments = extractTextAndCode(rawReply);
+        console.log(`[Slack Handler] Extracted ${segments.length} segments (text/code). Substantive: ${isSubstantiveResponse}`);
 
-        for (let i = 0; i < messageChunks.length; i++) {
-            const chunk = messageChunks[i];
-            const isLastChunk = i === messageChunks.length - 1;
-            const currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
+        // 10c. Process and Send Each Segment
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            const isLastSegment = i === segments.length - 1;
 
-            // Add divider and feedback buttons ONLY to the last chunk AND if response is substantive
-            if (isLastChunk && isSubstantiveResponse) { 
-                console.log("[Slack Handler] Adding feedback buttons to substantive response.");
-                currentBlocks.push({ "type": "divider" });
-                currentBlocks.push({
-                    "type": "actions", "block_id": `feedback_${originalTs}_${sphere}`,
-                    "elements": [
-                        { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
-                        { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
-                        { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
-                    ]
-                });
-            }
+            if (segment.type === 'text') {
+                const formattedText = formatSlackMessage(segment.content);
+                if (!formattedText || formattedText.length === 0) continue; // Skip empty text segments
 
-            try {
-                // Post chunks. NOTE: Non-streaming means we post all chunks after getting full LLM response.
-                // All chunks are posted as new messages in the replyTarget thread.
-                 await slack.chat.postMessage({
-                     channel: channel,
-                     thread_ts: replyTarget, // Thread all response parts to the original context
-                     text: chunk, // Fallback text
-                     blocks: currentBlocks
-                 });
-                 console.log(`[Slack Handler] Posted chunk ${i + 1}/${messageChunks.length}.`);
-            } catch (postError) {
-                 console.error(`[Slack Error] Failed post chunk ${i + 1}:`, postError.data?.error || postError.message);
-                 await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${i + 1} of the response)_` }).catch(()=>{});
-                 break; // Stop sending further chunks
+                const messageChunks = splitMessageIntoChunks(formattedText, MAX_SLACK_BLOCK_TEXT_LENGTH);
+
+                for (let j = 0; j < messageChunks.length; j++) {
+                    const chunk = messageChunks[j];
+                    const isLastChunkOfLastSegment = isLastSegment && (j === messageChunks.length - 1);
+
+                    const currentBlocks = [{ "type": "section", "text": { "type": "mrkdwn", "text": chunk } }];
+
+                    // Add feedback buttons ONLY to the very last text chunk of a substantive response
+                    if (isLastChunkOfLastSegment && isSubstantiveResponse) {
+                        console.log("[Slack Handler] Adding feedback buttons to final text chunk.");
+                        currentBlocks.push({ "type": "divider" });
+                        currentBlocks.push({
+                            "type": "actions", "block_id": `feedback_${originalTs}_${sphere}`,
+                            "elements": [
+                                { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
+                                { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
+                                { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
+                            ]
+                        });
+                    }
+
+                    try {
+                        await slack.chat.postMessage({
+                            channel: channel,
+                            thread_ts: replyTarget,
+                            text: chunk, // Fallback text
+                            blocks: currentBlocks
+                        });
+                        console.log(`[Slack Handler] Posted text chunk ${j + 1}/${messageChunks.length} for segment ${i + 1}/${segments.length}.`);
+                    } catch (postError) {
+                        console.error(`[Slack Error] Failed post text chunk ${j + 1}:`, postError.data?.error || postError.message);
+                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part of the response)_` }).catch(()=>{});
+                        break; // Stop sending further chunks for this segment
+                    }
+                }
+
+            } else if (segment.type === 'code') {
+                const filetype = getSlackFiletype(segment.language);
+                const filename = `code_snippet.${filetype === 'text' ? 'txt' : filetype}`; // Simple filename
+                const title = `Code Snippet (${segment.language || 'unknown'})`;
+                console.log(`[Slack Handler] Uploading code snippet: Lang=${segment.language}, Filetype=${filetype}, Filename=${filename}`);
+
+                try {
+                    await slack.files.uploadV2({
+                        channel_id: channel,
+                        thread_ts: replyTarget, // Upload to the thread
+                        content: segment.content,
+                        filename: filename,
+                        filetype: filetype,
+                        title: title,
+                        initial_comment: `\`${title}\`` // Add a small comment mentioning the snippet title
+                    });
+                    console.log(`[Slack Handler] Posted code snippet for segment ${i + 1}/${segments.length}.`);
+
+                     // Add feedback buttons if this is the VERY LAST segment and it's substantive
+                    if (isLastSegment && isSubstantiveResponse) {
+                         console.log("[Slack Handler] Adding feedback buttons after final code snippet.");
+                         // Post a separate message with just the feedback buttons
+                         await slack.chat.postMessage({
+                             channel: channel,
+                             thread_ts: replyTarget,
+                             blocks: [
+                                 { "type": "divider" },
+                                 {
+                                     "type": "actions", "block_id": `feedback_${originalTs}_${sphere}`,
+                                     "elements": [
+                                         { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
+                                         { "type": "button", "text": { "type": "plain_text", "text": "👌", "emoji": true }, "value": "ok", "action_id": "feedback_ok" },
+                                         { "type": "button", "text": { "type": "plain_text", "text": "👍", "emoji": true }, "style": "primary", "value": "great", "action_id": "feedback_great" }
+                                     ]
+                                 }
+                             ]
+                         });
+                    }
+
+                } catch (uploadError) {
+                    console.error(`[Slack Error] Failed upload code snippet:`, uploadError.data?.error || uploadError.message);
+                    // Attempt to post the raw code block as a fallback message if upload fails
+                    try {
+                        const fallbackText = `⚠️ Failed to upload code snippet. Raw code:\n\`\`\`\n${segment.content}\n\`\`\``;
+                        const fallbackChunks = splitMessageIntoChunks(fallbackText, MAX_SLACK_BLOCK_TEXT_LENGTH);
+                        for (const fallbackChunk of fallbackChunks) {
+                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackChunk });
+                        }
+                    } catch (fallbackError) {
+                         console.error("[Slack Error] Failed post snippet fallback text:", fallbackError.data?.error || fallbackError.message);
+                    }
+                     // Don't add feedback buttons if the snippet upload failed
+                }
             }
         }
+        // -- End Segment Processing Loop --
 
     } catch (error) {
         // 11. Handle Errors
