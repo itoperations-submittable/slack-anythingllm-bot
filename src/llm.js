@@ -140,12 +140,16 @@ export async function decideSphere(userQuestion, conversationHistory = "") {
 // --- Main LLM Chat Function (Non-Streaming) ---
 export async function queryLlm(sphere, inputText, sessionId) {
     console.log(`[LLM Service/queryLlm] Querying sphere: ${sphere} with mode: query`);
+    const requestBody = {
+        message: inputText,
+        mode: 'query',
+        sessionId: sessionId,
+    };
+
+    console.log("[LLM Service/queryLlm] Request Body:", JSON.stringify(requestBody, null, 2));
+
     try {
-        const llmResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`, {
-            message: inputText,
-            mode: 'query',
-            sessionId: sessionId,
-        }, {
+        const llmResponse = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`, requestBody, {
             headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
             timeout: 90000, // 90s timeout for final answer
         });
