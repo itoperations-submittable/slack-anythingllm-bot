@@ -178,8 +178,6 @@ async function handleSlackMessageEventInternal(event) {
                     sphere = cachedSphere;
                     workspaceSource = 'ThreadCache';
                     console.log(`[Slack Handler] Using cached workspace "${sphere}" for thread ${threadTs}.`);
-                    // If using cached workspace, we don't need history for the prompt
-                    skipHistory = true;
                 }
             } catch (err) { console.error(`[Redis Error] Failed get thread workspace cache ${threadWorkspaceKey}:`, err); }
         }
@@ -194,10 +192,7 @@ async function handleSlackMessageEventInternal(event) {
                 const availableWorkspaces = await getWorkspaces();
                 if (availableWorkspaces.includes(potentialWorkspace)) {
                     sphere = potentialWorkspace;
-                    // Keep the tag in the query as per previous request
-                    // cleanedQuery = cleanedQuery.replace(match[0], '').trim();
                     workspaceSource = 'ManualOverride';
-                    skipHistory = true; // Manual override implies specific context, skip history
                     console.log(`[Slack Handler] Manual workspace override confirmed: "${sphere}". Query remains: "${cleanedQuery}"`);
                } else {
                     console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not an available workspace. Defaulting to 'all'.`);
@@ -222,11 +217,25 @@ async function handleSlackMessageEventInternal(event) {
             console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: "${thinkingText}"`);
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
 
-        // 7. Construct Final LLM Input (No history included by default now)
-        let llmInputText = `User Query: ${cleanedQuery}`;
-        console.log(`[Slack Handler] Sending input to LLM Sphere ${sphere} (No history included)`);
+        // 7. Fetch History (if not skipped by reset)
+        let conversationHistory = "";
+        if (!skipHistory) {
+            console.log("[Slack Handler] Fetching history for LLM context...");
+            conversationHistory = await fetchConversationHistory(channel, threadTs, originalTs, isDM);
+        }
 
-        // 8. Query LLM
+        // 8. Construct Final LLM Input (Always include history if fetched)
+        let llmInputText = "";
+        if (conversationHistory) { // Check if history string is non-empty
+            llmInputText += conversationHistory.trim() + "\n\nBased on the conversation history above...\n";
+            console.log(`[Slack Handler] Including history in final prompt.`);
+        } else {
+             console.log("[Slack Handler] No history included in final prompt (either skipped by reset or none found).");
+        }
+        llmInputText += `User Query: ${cleanedQuery}`;
+        console.log(`[Slack Handler] Sending input to LLM Sphere ${sphere}...`);
+
+        // 9. Query LLM (Renumbered from 8)
         const llmStartTime = Date.now();
         const rawReply = await queryLlm(sphere, llmInputText, userId);
         console.log(`[Slack Handler] LLM call duration: ${Date.now() - llmStartTime}ms`);
@@ -235,7 +244,7 @@ async function handleSlackMessageEventInternal(event) {
             throw new Error('LLM returned empty response.');
         }
 
-        // 9. Format and Send Response
+        // 10. Format and Send Response
         const slackFormattedReply = formatSlackMessage(rawReply);
 
         // --- Smarter Check for Substantive Response ---
@@ -298,14 +307,14 @@ async function handleSlackMessageEventInternal(event) {
         }
 
     } catch (error) {
-        // 10. Handle Errors
+        // 11. Handle Errors
         console.error('[Slack Handler Error]', error);
         try {
             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `⚠️ Oops! I encountered an error processing your request. (Sphere: ${sphere})` });
         } catch (slackError) { console.error("[Slack Error] Failed post error message:", slackError.data?.error || slackError.message); }
 
     } finally {
-        // 11. Cleanup Thinking Message
+        // 12. Cleanup Thinking Message
         if (thinkingMessageTs) {
             try {
                 await slack.chat.delete({ channel: channel, ts: thinkingMessageTs });
