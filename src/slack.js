@@ -216,14 +216,18 @@ async function handleSlackMessageEventInternal(event) {
             console.log(`[Slack Handler] Updated thinking message (ts: ${thinkingMessageTs}) to: "${thinkingText}"`);
         } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
 
-        // 7. Fetch History (if not skipped by reset)
+        // 7. Fetch History **ONLY if in a thread** (and not skipped by reset)
         let conversationHistory = "";
-        if (!skipHistory) {
-            console.log("[Slack Handler] Fetching history for LLM context...");
+        if (!skipHistory && threadTs) { 
+            console.log("[Slack Handler] Fetching history for LLM context (message is in a thread)...");
             conversationHistory = await fetchConversationHistory(channel, threadTs, originalTs, isDM);
+        } else {
+            if (!threadTs) {
+                 console.log("[Slack Handler] Skipping history fetch: Message is not in a thread.");
+            }
         }
 
-        // 8. Construct Final LLM Input (Always include history if fetched)
+        // 8. Construct Final LLM Input (Include history only if it was fetched)
         let llmInputText = "";
         if (conversationHistory) { // Check if history string is non-empty
             llmInputText += conversationHistory.trim() + "\n\nBased on the conversation history above...\n";
