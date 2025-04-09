@@ -77,21 +77,44 @@ export function formatSlackMessage(rawText) {
      if (!rawText) return '';
 
      // 1. Pre-process: Remove language identifiers
-     let processedText = rawText.replace(/^``` *(\w+?) *\n/gm, '```\n');
+     let processedText = rawText.replace(/^``` *(\\w+?) *\\n/gm, '```\\n');
 
      // 2. Pre-process: Ensure extra newline padding around code blocks for Slack rendering
-     // Add newline AFTER opening ``` (if not already blank)
-     processedText = processedText.replace(/^```\n(?!\n)/gm, '```\n\n');
-     // Add newline BEFORE closing ``` (if not already blank)
-     processedText = processedText.replace(/(?<!\n)\n```$/gm, '\n\n```');
+     processedText = processedText.replace(/^```\\n(?!\\n)/gm, '```\\n\\n');
+     processedText = processedText.replace(/(?<!\\n)\\n```$/gm, '\\n\\n```');
 
-     // Optional: Log the final processed text before slackify
-     // console.log("[Slack Handler Debug] Final Pre-processed Text:\n", processedText);
+     // 3. Isolate Code Blocks to bypass slackifyMarkdown for them
+     const codeBlocks = [];
+     const codeBlockRegex = /^```(?:.|\\n)*?^```$/gm; // Match ``` blocks spanning multiple lines
+
+     // Temporarily replace code blocks with placeholders
+     const textWithoutCodeBlocks = processedText.replace(codeBlockRegex, (match) => {
+         const placeholder = `___CODEBLOCK_${codeBlocks.length}___`;
+         codeBlocks.push(match); // Store the original, pre-processed block
+         return placeholder;
+     });
+
+     let slackifiedText = '';
+     try {
+         // 4. Run slackifyMarkdown ONLY on the text *without* code blocks
+         slackifiedText = slackifyMarkdown(textWithoutCodeBlocks);
+     } catch (conversionError) {
+         console.error("[Utils] Error converting non-code text with slackify-markdown:", conversionError);
+         slackifiedText = textWithoutCodeBlocks; // Fallback to text without code blocks if conversion fails
+     }
 
      try {
-         return slackifyMarkdown(processedText);
-     } catch (conversionError) {
-         console.error("[Utils] Error converting response with slackify-markdown, using processed text:", conversionError);
-         return processedText;
+        // 5. Re-insert the original, pre-processed code blocks
+        let finalText = slackifiedText;
+        codeBlocks.forEach((block, index) => {
+            finalText = finalText.replace(`___CODEBLOCK_${index}___`, block);
+        });
+        return finalText;
+
+     } catch (reinsertionError) {
+        console.error("[Utils] Error re-inserting code blocks:", reinsertionError);
+        // Fallback: return the processed text with placeholders OR the original processed text
+        // Returning original processed text is safer if re-insertion fails badly.
+        return processedText;
      }
 }
