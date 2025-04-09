@@ -15,7 +15,7 @@ import {
     databaseUrl,
     redisUrl
 } from './config.js';
-import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype } from './utils.js';
+import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
 import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 
@@ -277,38 +277,12 @@ async function handleSlackMessageEventInternal(event) {
                     // Remove all escaped newlines from the text before setting it in blocks
                     textToSend = textToSend.replace(/\\n/g, '');
                     
-                    // Check if this is a code block
-                    const isCodeBlock = textToSend.includes('```');
-                    console.log(`[Slack Handler DEBUG] Text chunk contains code block: ${isCodeBlock}, Text starts with: "${textToSend.substring(0, 20)}..."`);
+                    // Use rich_text blocks for all content types to ensure full width display
+                    console.log(`[Slack Handler DEBUG] Converting to rich_text block format`);
                     
-                    let currentBlocks;
-                    
-                    if (isCodeBlock) {
-                        // For code blocks, use rich_text with preformatted element
-                        // Extract code from markdown format
-                        const codeMatch = textToSend.match(/```(?:\w+)?\n([\s\S]*?)```/);
-                        const codeContent = codeMatch ? codeMatch[1] : textToSend;
-                        
-                        console.log(`[Slack Handler DEBUG] Using rich_text block for code content.`);
-                        currentBlocks = [{
-                            "type": "rich_text",
-                            "block_id": `code_${Date.now()}_${j}`,
-                            "elements": [{
-                                "type": "rich_text_section",
-                                "elements": [{ 
-                                    "type": "text", 
-                                    "text": textToSend 
-                                }]
-                            }]
-                        }];
-                    } else {
-                        // For regular text, use section with mrkdwn to preserve formatting
-                        console.log(`[Slack Handler DEBUG] Using section block for regular text.`);
-                        currentBlocks = [{ 
-                            "type": "section", 
-                            "text": { "type": "mrkdwn", "text": textToSend }
-                        }];
-                    }
+                    // Create rich text block
+                    const richTextBlock = markdownToRichTextBlock(textToSend, `msg_${Date.now()}_${j}`);
+                    let currentBlocks = [richTextBlock];
 
                     if (isLastChunkOfLastSegment && isSubstantiveResponse) {
                         // *** ADDED: Log entering feedback block ***
@@ -405,38 +379,12 @@ async function handleSlackMessageEventInternal(event) {
                         // Remove all escaped newlines from the code before setting it in blocks
                         textToSend = textToSend.replace(/\\n/g, '');
                         
-                        // Check if this is a code block
-                        const isCodeBlock = textToSend.includes('```');
-                        console.log(`[Slack Handler DEBUG] Text chunk contains code block: ${isCodeBlock}, Text starts with: "${textToSend.substring(0, 20)}..."`);
+                        // Use rich_text blocks for all content types to ensure full width display
+                        console.log(`[Slack Handler DEBUG] Converting to rich_text block format`);
                         
-                        let currentBlocks;
-                        
-                        if (isCodeBlock) {
-                            // For code blocks, use rich_text with preformatted element
-                            // Extract code from markdown format
-                            const codeMatch = textToSend.match(/```(?:\w+)?\n([\s\S]*?)```/);
-                            const codeContent = codeMatch ? codeMatch[1] : textToSend;
-                            
-                            console.log(`[Slack Handler DEBUG] Using rich_text block for code content.`);
-                            currentBlocks = [{
-                                "type": "rich_text",
-                                "block_id": `code_${Date.now()}_${j}`,
-                                "elements": [{
-                                    "type": "rich_text_section",
-                                    "elements": [{ 
-                                        "type": "text", 
-                                        "text": textToSend 
-                                    }]
-                                }]
-                            }];
-                        } else {
-                            // For regular text, use section with mrkdwn to preserve formatting
-                            console.log(`[Slack Handler DEBUG] Using section block for regular text.`);
-                            currentBlocks = [{ 
-                                "type": "section", 
-                                "text": { "type": "mrkdwn", "text": textToSend }
-                            }];
-                        }
+                        // Create rich text block
+                        const richTextBlock = markdownToRichTextBlock(textToSend, `code_${Date.now()}_${j}`);
+                        let currentBlocks = [richTextBlock];
 
                         if (isLastChunkOfLastSegment && isSubstantiveResponse) {
                             // *** ADDED: Log entering feedback block ***
