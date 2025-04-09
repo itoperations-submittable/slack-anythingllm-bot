@@ -18,7 +18,7 @@ export const redisUrl = process.env.REDIS_URL;
 export const databaseUrl = process.env.DATABASE_URL;
 
 // --- Bot Behavior Configuration ---
-export const MAX_SLACK_BLOCK_TEXT_LENGTH = 2900; // Target max length for text within a block
+export const MAX_SLACK_BLOCK_TEXT_LENGTH = 700; // Reduced to stay below Slack's "See more" threshold
 export const RESET_CONVERSATION_COMMAND = 'reset conversation';
 export const WORKSPACE_OVERRIDE_COMMAND_PREFIX = '#'; // Prefix to trigger manual workspace selection
 
