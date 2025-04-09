@@ -232,7 +232,10 @@ async function handleSlackMessageEventInternal(event) {
         } else {
              console.log("[Slack Handler] No history included in final prompt (either skipped by reset or none found).");
         }
-        llmInputText += `User Query: ${cleanedQuery}`;
+        llmInputText += `User Query: ${cleanedQuery}\n\n`; // Add double newline
+        // Add formatting instruction for the LLM
+        llmInputText += `IMPORTANT: Format any code examples using standard Markdown triple backticks, ideally with a language identifier (e.g., \`\`\`python ... \`\`\`).`;
+        llmInputText += `\n\n`;
         console.log(`[Slack Handler] Sending input to LLM Sphere ${sphere}...`);
 
         // 9. Query LLM (Renumbered from 8)
