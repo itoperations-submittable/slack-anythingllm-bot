@@ -665,25 +665,25 @@ export async function handleInteraction(req, res) {
                          channel: channelId,
                          latest: messageTs, // Fetch messages up to and including the button message
                          inclusive: true,
-                         limit: 5 // Look back a few messages
+                         limit: 10 // Increased limit to 10
                      });
 
                      if (historyResult.ok && historyResult.messages) {
-                         // Reverse the array to be chronological (oldest first)
                          const chronologicalMessages = historyResult.messages.reverse();
-
-                         // Find the button message index IN THE REVERSED ARRAY
                          const buttonMessageIndex = chronologicalMessages.findIndex(msg => msg.ts === messageTs);
                          
-                         if (buttonMessageIndex > -1) { // Ensure the button message was found
-                            // Look at messages *before* the button message (lower indices)
-                            for (let j = buttonMessageIndex - 1; j >= 0; j--) { // Loop is now correct
+                         console.log(`[Interaction Debug] History fetched. Button msg index in chrono array: ${buttonMessageIndex}. Total msgs fetched: ${chronologicalMessages.length}`);
+
+                         if (buttonMessageIndex > -1) {
+                            for (let j = buttonMessageIndex - 1; j >= 0; j--) {
                                 const potentialBotMsg = chronologicalMessages[j];
-                                // Check if it's from our bot (and ideally has content)
+                                // Log details of the message being checked
+                                console.log(`[Interaction Debug] Checking history msg at index ${j}: ts=${potentialBotMsg.ts}, user=${potentialBotMsg.user}, text="${potentialBotMsg.text?.substring(0,30)}..."`); 
+                                
                                 if (potentialBotMsg.user === botUserId && potentialBotMsg.text) {
-                                     actualBotMessageText = potentialBotMsg.text; // Use the fallback text
-                                     console.log(`[Interaction Handler] Found preceding bot message text: "${actualBotMessageText.substring(0, 50)}..."`);
-                                     break; // Found the most recent preceding bot message
+                                     actualBotMessageText = potentialBotMsg.text;
+                                     console.log(`[Interaction Handler] Found preceding bot message text at index ${j}: "${actualBotMessageText.substring(0, 50)}..."`);
+                                     break;
                                 }
                             }
                          }
