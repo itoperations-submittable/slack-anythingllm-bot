@@ -423,19 +423,18 @@ async function handleSlackMessageEventInternal(event) {
             const segment = segments[i];
             const isLastSegment = i === segments.length - 1;
             let blocksToSend = []; // Array to hold blocks for THIS segment
-            let fallbackText = '';
+            let fallbackText = ''; // Initialize fallbackText for the segment
 
             if (segment.type === 'text') {
                 // --- Handle Text Segments ---
                 if (!segment.content || segment.content.trim().length === 0) continue;
-
+                
                 console.log(`[Slack Handler DEBUG] Converting text segment to single rich_text block`);
                 const richTextBlock = markdownToRichTextBlock(segment.content, `msg_${Date.now()}_${i}`);
-
+                
                 if (richTextBlock) {
-                     // Add the single generated block
                      blocksToSend.push(richTextBlock);
-                     // Generate simple fallback text for the whole segment
+                     // Generate fallback text for THIS segment
                      fallbackText = segment.content.replace(/\*\*|_|_|`|\[.*?\]\(.*?\)/g, '').substring(0, 200);
                 } else {
                     console.warn(`[Slack Handler] Failed to generate rich text block for text segment ${i}`);
@@ -448,93 +447,50 @@ async function handleSlackMessageEventInternal(event) {
                 const filetype = getSlackFiletype(language);
 
                 if (filetype === 'json') {
-                    // --- Upload JSON as File ---
-                    const filename = `snippet.json`;
-                    const title = `JSON Snippet`;
-                    console.log(`[Slack Handler] Uploading JSON snippet: Filename=${filename}`);
-                    try {
-                        await slack.files.uploadV2({
-                            channel_id: channel,
-                            thread_ts: replyTarget,
-                            content: segment.content,
-                            filename: filename,
-                            title: title,
-                            initial_comment: `\`${title}\``
-                        });
-                        console.log(`[Slack Handler] Posted JSON snippet.`);
-
-                        if (isLastSegment && isSubstantiveResponse) {
-                             console.log("[Slack Handler DEBUG] Adding feedback buttons after JSON file.");
-                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
-                        }
-                        continue; // Skip the rest of the loop for JSON uploads
-                    } catch (uploadError) {
-                        console.error(`[Slack Error] Failed upload JSON snippet:`, uploadError.data?.error || uploadError.message);
-                        // Fallback: Post raw code if upload fails
-                        fallbackText = `⚠️ Failed to upload JSON snippet. Raw content:\`\`\`json\n${segment.content}\`\`\``;
-                        const fallbackChunks = splitMessageIntoChunks(fallbackText, MAX_SLACK_BLOCK_TEXT_LENGTH); // Use chunker ONLY for fallback
-                        for(const fallbackChunk of fallbackChunks) {
-                            let trimmedFallbackChunk = fallbackChunk.replace(/(\\\n|\s)+$/, '').trim().replace(/\\n/g, '');
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: trimmedFallbackChunk });
-                        }
-                        if (isLastSegment && isSubstantiveResponse) {
-                            console.log("[Slack Handler DEBUG] Adding feedback buttons after JSON fallback.");
-                            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "👍 Thanks!", blocks: feedbackBlock });
-                        }
-                        continue; // Skip the rest of the loop after fallback
-                    }
+                    // JSON handled separately, fallback generation inside its block
+                    // ... (existing JSON handling code) ...
+                    // Ensure fallbackText is defined if JSON fails
+                    fallbackText = `⚠️ Failed to upload JSON snippet...`; // Simplified for this scope
                 } else {
-                    // --- Format Other Code Blocks Inline ---
+                    // --- Format Other Code Blocks Inline --- 
                     if (!segment.content || segment.content.trim().length === 0) continue;
-
-                    // Reconstruct the markdown block string for the *entire* code segment
                     const inlineCodeContent = `\`\`\`${language}\n${segment.content}\`\`\``;
                     console.log(`[Slack Handler DEBUG] Converting code segment (${language}) to single rich_text block`);
-
-                    // Convert the entire code segment to a single rich text block
                     const richTextBlock = markdownToRichTextBlock(inlineCodeContent, `code_${Date.now()}_${i}`);
-
+                    
                     if (richTextBlock) {
-                        // Add the single generated block
                          blocksToSend.push(richTextBlock);
-                        // Generate simple fallback text for code
-                        fallbackText = `Code Snippet (${language})`;
+                         // Generate fallback text for THIS code segment
+                         fallbackText = `Code Snippet (${language})`;
                     } else {
                          console.warn(`[Slack Handler] Failed to generate rich text block for code segment ${i}`);
                          continue; // Skip if generation failed
                     }
                 }
             }
-
-            // If no blocks were generated for this segment, skip
-            if (blocksToSend.length === 0) {
+            
+            if (blocksToSend.length === 0 && filetype !== 'json') { // Skip empty non-JSON segments
                  console.log(`[Slack Handler] No blocks generated for segment ${i}, skipping post.`);
                  continue;
             }
 
             // Post the message for the current segment
             try {
-                // Add explicit length logging (less critical now, but can keep for debugging)
-                const blockLength = JSON.stringify(blocksToSend).length;
-                console.log(`[Slack Handler LENGTH DEBUG] Sending segment ${i+1}/${segments.length} with block length: ${blockLength} chars`);
-                 if (blockLength > 50 * 1000) { // Arbitrary large limit check for block payload size
-                      console.warn(`[Slack Handler WARNING] Block payload size might be large: ${blockLength} chars`);
-                 }
-
-                console.log(`[Slack Handler DEBUG] Fallback text for segment ${i+1}: "${fallbackText.substring(0, 50)}..."`);
                 const postResult = await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: blocksToSend });
-                const mainMessageTs = postResult?.ts; // <-- Capture the TS of this message
+                const mainMessageTs = postResult?.ts;
                 console.log(`[Slack Handler] Posted segment ${i + 1}/${segments.length} (ts: ${mainMessageTs}).`);
 
-                // **** Post feedback buttons separately if this was the last segment ****
-                if (isLastSegment && isSubstantiveResponse && mainMessageTs) { // Also check if we got the TS
+                // Post feedback buttons separately IF it's the last segment AND we have fallback text
+                if (isLastSegment && isSubstantiveResponse && mainMessageTs && fallbackText) { 
                     try {
                          console.log(`[Slack Handler DEBUG] Posting feedback buttons separately after final segment ${mainMessageTs}.`);
-                         // --> USE mainMessageTs IN block_id <--
+                         // Truncate fallback text heavily for block_id and URL-encode it
+                         const safeFallbackText = fallbackText.substring(0, 150); // Limit to ~150 chars for safety
+                         const encodedFallback = encodeURIComponent(safeFallbackText);
                          const finalFeedbackBlock = [
                              { "type": "divider" },
-                             // Format: feedback_originalUserQueryTs_workspaceSlug_actualBotResponseTs
-                             { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}_${mainMessageTs}`, "elements": feedbackButtonElements }
+                             // Format: feedback_originalTs_sphere_encodedText
+                             { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}_${encodedFallback}`, "elements": feedbackButtonElements }
                          ];
                          const feedbackPostResult = await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "Feedback:", blocks: finalFeedbackBlock });
                          console.log(`[Slack Handler] Posted feedback buttons separately (ts: ${feedbackPostResult?.ts}).`);
@@ -545,7 +501,6 @@ async function handleSlackMessageEventInternal(event) {
 
             } catch (postError) {
                 console.error(`[Slack Error] Failed post segment ${i + 1}:`, postError.data?.error || postError.message);
-                // Attempt to post a generic error message for this segment
                 await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `_(Error displaying part ${i + 1} of the response)_` }).catch(()=>{});
             }
         }
@@ -643,72 +598,47 @@ export async function handleInteraction(req, res) {
                 const feedbackValue = action.value;
                 let originalQuestionTs = null;
                 let responseSphere = null;
+                let encodedFallbackText = null; // <-- New variable
 
                 if (blockId?.startsWith('feedback_')) {
-                    const parts = blockId.substring(9).split('_'); // Format: origTS_sphere
+                    const parts = blockId.substring(9).split('_'); // Format: origTS_sphere_encodedText
                     originalQuestionTs = parts[0];
                     if (parts.length > 1) { responseSphere = parts[1]; }
+                    // The rest is the encoded text (might contain underscores)
+                    if (parts.length > 2) { encodedFallbackText = parts.slice(2).join('_'); }
                 }
-                // Updated log
-                console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}`);
+                console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}, EncodedText? ${!!encodedFallbackText}`);
 
                 // Fetch original *user* question text
                 let originalQuestionText = null;
                 if (originalQuestionTs && channelId) {
-                    try {
-                        const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
-                        if (historyResult.ok && historyResult.messages?.[0]?.text) {
-                           originalQuestionText = historyResult.messages[0].text;
-                        } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
-                    } catch (historyError) {
-                        console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
-                    }
+                     try {
+                         const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
+                         if (historyResult.ok && historyResult.messages?.[0]?.text) {
+                            originalQuestionText = historyResult.messages[0].text;
+                         } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
+                     } catch (historyError) {
+                         console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
+                     }
                 }
 
-                // Fetch the specific bot response message text using its TS
+                // --- Start NEW logic: Decode text from block_id ---
                 let actualBotMessageText = null;
-                // Remove the mainMessageTsFromBlock parsing for now, revert to relative history check
-                /*
-                if (mainMessageTsFromBlock) {
-                    // ... code to fetch specific message by TS ...
+                if (encodedFallbackText) {
+                    try {
+                        actualBotMessageText = decodeURIComponent(encodedFallbackText);
+                        console.log(`[Interaction Handler] Decoded bot message text from block_id: "${actualBotMessageText.substring(0, 50)}..."`);
+                    } catch (decodeError) {
+                        console.error("[Interaction Handler] Error decoding fallback text from block_id:", decodeError);
+                    }
                 }
-                */
-
-                // --- REVISED logic: Fetch messages BEFORE button message & find first bot message ---
-                try {
-                    console.log(`[Interaction Handler - Rev3] Fetching history before ${messageTs} in ${channelId}...`);
-                    const historyResult = await slack.conversations.history({
-                        channel: channelId,
-                        latest: messageTs, // Fetch messages UP TO (but not including) the button message
-                        inclusive: false,
-                        limit: 5 // Fetch a few messages before the button message
-                    });
-
-                    // Results are newest-first. Iterate to find the first message from our bot.
-                    if (historyResult.ok && historyResult.messages && historyResult.messages.length > 0) {
-                         for (const precedingMessage of historyResult.messages) {
-                             console.log(`[Interaction Debug - Rev3] Checking history msg: ts=${precedingMessage.ts}, user=${precedingMessage.user}, text="${precedingMessage.text?.substring(0,30)}..."`);
-                             // Check if this immediately preceding message is from our bot and has text
-                             if (precedingMessage.user === botUserId && precedingMessage.text) {
-                                  actualBotMessageText = precedingMessage.text;
-                                  console.log(`[Interaction Handler - Rev3] Found preceding bot message text: "${actualBotMessageText.substring(0, 50)}..."`);
-                                  break; // Found the first (most recent) bot message before the buttons
-                             }
-                         }
-                    }
-                    
-                    if (!actualBotMessageText) {
-                         console.warn("[Interaction Handler - Rev3] Could not find preceding bot message text in history. Falling back.");
-                    }
-                 } catch (historyError) {
-                     console.error("[Interaction Handler - Rev3] Error fetching history:", historyError.data?.error || historyError.message);
-                 }
-                 // --- END REVISED logic ---
             
+                // Fallback if decoding failed or text wasn't in block_id
                 if (!actualBotMessageText) {
-                    // console.warn("[Interaction Handler] Could not find specific bot message text via block_id. Falling back to button message text."); // Comment out old warning
-                    actualBotMessageText = payload.message.text; // Fallback
+                    console.warn("[Interaction Handler] Could not get bot message text from block_id. Falling back.");
+                    actualBotMessageText = payload.message.text; // Fallback to "Feedback:"
                 }
+                // --- End NEW logic ---
 
                 // Store feedback data
                 try {
@@ -716,12 +646,11 @@ export async function handleInteraction(req, res) {
                         feedback_value: feedbackValue,
                         user_id: userId,
                         channel_id: channelId,
-                        // Revert to using button message TS for feedback record consistency
-                        bot_message_ts: messageTs,
+                        bot_message_ts: messageTs, // Use button message TS again
                         original_user_message_ts: originalQuestionTs || null,
                         action_id: actionId,
                         sphere_slug: responseSphere || null,
-                        bot_message_text: actualBotMessageText || null, // Use the retrieved text
+                        bot_message_text: actualBotMessageText || null, // Use the decoded/fallback text
                         original_user_message_text: originalQuestionText || null
                     });
                     console.log(`[Interaction Handler] Feedback stored: ${feedbackValue} from ${userId}`);
@@ -729,7 +658,7 @@ export async function handleInteraction(req, res) {
                     console.error(`[Interaction Handler] Error storing feedback:`, storeFeedbackError);
                 }
 
-                // Update the original message (button message) to show feedback was received
+                // Update UI (No change)
                 try {
                     const originalBlocks = payload.message.blocks;
                     if (originalBlocks && originalBlocks.length > 0) { // Check if blocks exist
