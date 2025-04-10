@@ -350,11 +350,13 @@ async function handleSlackMessageEventInternal(event) {
             }
 
             // Add feedback buttons if it's the last segment and response is substantive
+            /* // Temporarily disable feedback blocks to test full-width rendering
             if (isLastSegment && isSubstantiveResponse) {
                 console.log("[Slack Handler DEBUG] Adding feedback buttons to final segment.");
                 // Append feedback blocks to the list of blocks for this segment
                 blocksToSend = blocksToSend.concat(feedbackBlock);
             }
+            */
 
             // Post the message for the current segment
             try {
