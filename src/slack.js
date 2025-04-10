@@ -13,15 +13,67 @@ import {
     MAX_SLACK_BLOCK_CODE_LENGTH,
     RESET_CONVERSATION_COMMAND,
     databaseUrl,
-    redisUrl
+    redisUrl,
+    githubToken
 } from './config.js';
 import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
 import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
+import { Octokit } from '@octokit/rest';
 
 // Initialize Slack clients
 export const slack = new WebClient(slackToken);
 export const slackEvents = createEventAdapter(slackSigningSecret, { includeBody: true });
+
+// +++ Start GitHub Integration +++
+let octokit;
+if (githubToken) {
+    octokit = new Octokit({ auth: githubToken });
+    console.log("[GitHub Service] Octokit initialized.");
+} else {
+    console.warn("[GitHub Service] GITHUB_TOKEN not set. GitHub features (release check) will be disabled.");
+}
+
+/**
+ * Fetches the latest release for a given repository.
+ * @param {string} owner - The repository owner.
+ * @param {string} repo - The repository name.
+ * @returns {Promise<object | null>} Object with tagName, publishedAt, url, or null.
+ */
+async function getLatestRelease(owner, repo) {
+    if (!octokit) {
+        console.warn("[GitHub Service] getLatestRelease called but Octokit not initialized.");
+        return null;
+    }
+    if (!owner || !repo) {
+        console.error("[GitHub Service] getLatestRelease requires owner and repo.");
+        return null;
+    }
+    try {
+        console.log(`[GitHub Service] Fetching latest release for ${owner}/${repo}`);
+        const response = await octokit.repos.getLatestRelease({ owner, repo });
+        if (response.status === 200 && response.data) {
+            console.log(`[GitHub Service] Found latest release: ${response.data.tag_name}`);
+            return {
+                tagName: response.data.tag_name,
+                publishedAt: response.data.published_at,
+                url: response.data.html_url
+            };
+        } else {
+            console.warn(`[GitHub Service] Unexpected response status for latest release ${owner}/${repo}: ${response.status}`);
+            return null;
+        }
+    } catch (error) {
+        // Handle 404 Not Found specifically - repo exists but has no releases
+        if (error.status === 404) { 
+            console.log(`[GitHub Service] No releases found for ${owner}/${repo} (404).`);
+        } else {
+            console.error(`[GitHub Service] Error fetching latest release for ${owner}/${repo}:`, error.status, error.message);
+        }
+        return null;
+    }
+}
+// +++ End GitHub Integration +++
 
 // --- History Fetching --- (Adapted from original handler)
 async function fetchConversationHistory(channel, threadTs, originalTs, isDM) {
@@ -135,6 +187,89 @@ async function handleSlackMessageEventInternal(event) {
         console.error("[Slack Error] Failed post initial thinking message:", slackError.data?.error || slackError.message);
         return null;
     });
+
+    // --- GitHub Direct Answer Logic ---
+    if (octokit) { // Only proceed if GitHub client is initialized
+        // Match patterns like "latest gravityforms release", "latest stripe addon release", "latest ppcp release"
+        const releaseMatch = cleanedQuery.match(/latest (?:gravityforms\/)?([\w-]+(?: addon| checkout)?|\S+) release/i);
+        
+        if (releaseMatch && releaseMatch[1]) {
+            let productName = releaseMatch[1].toLowerCase();
+            let owner = 'gravityforms'; // Default owner
+            let repo = null;
+
+            // Abbreviation mapping
+            const abbreviations = {
+                'gf': 'gravityforms',
+                'ppcp': 'gravityformsppcp',
+                'paypal checkout': 'gravityformsppcp',
+                'paypal': 'gravityformsppcp', // Assuming latest paypal means ppcp
+                'stripe': 'gravityformsstripe',
+                'authorize.net': 'gravityformsauthorizenet', // Example
+                'user registration': 'gravityformsuserregistration',
+                // Add more abbreviations as needed
+            };
+
+            console.log(`[Slack Handler] Potential release query detected for product: "${productName}"`);
+
+            // Handle specific cases and abbreviations
+            if (productName === 'gravityflow') {
+                repo = 'gravityflow';
+            } else if (abbreviations[productName]) {
+                repo = abbreviations[productName];
+            } else {
+                // Assume it's an add-on suffix, remove potential suffixes first
+                productName = productName.replace(/\s+addon$/, '').replace(/\s+checkout$/, '');
+                
+                // Check if the user already provided the full name
+                if (productName.startsWith('gravityforms')) {
+                    repo = productName;
+                } else {
+                     // Otherwise, prepend 'gravityforms' to the assumed suffix
+                    repo = `gravityforms${productName}`;
+                }
+            }
+
+            console.log(`[Slack Handler] Determined GitHub target: ${owner}/${repo}`);
+
+            // Proceed if we have a valid owner/repo
+            if (owner && repo) {
+                try {
+                    const releaseInfo = await getLatestRelease(owner, repo);
+                    if (releaseInfo) {
+                        const publishedDate = new Date(releaseInfo.publishedAt).toLocaleDateString();
+                        // Simplify the message text format
+                        const messageText = `The latest release for ${owner}/${repo} is ${releaseInfo.tagName}. Published on ${publishedDate}. More info: <${releaseInfo.url}|Release Notes>`; // Added link
+                        const richTextBlock = markdownToRichTextBlock(messageText, `release_${owner}_${repo}`);
+                        
+                        if (richTextBlock) {
+                            await slack.chat.postMessage({ 
+                                channel, 
+                                thread_ts: replyTarget, 
+                                // Update fallback text to match desired format
+                                text: `The latest release for ${owner}/${repo} is ${releaseInfo.tagName} (Published on ${publishedDate})`, // Simplified fallback
+                                blocks: [richTextBlock]
+                            });
+                            console.log("[Slack Handler] Responded directly with GitHub release info.");
+                            const ts = await thinkingMessagePromise; 
+                            if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
+                            return; // Stop further processing
+                        }
+                    } else {
+                        // Handle case where release wasn't found
+                         await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `I couldn't find any releases for ${owner}/${repo}.` });
+                         const ts = await thinkingMessagePromise; 
+                         if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
+                         return;
+                    }
+                } catch (githubError) {
+                    console.error(`[Slack Handler] Error during GitHub direct answer for ${owner}/${repo}:`, githubError);
+                    // Fall through to LLM on error
+                }
+            }
+        }
+    }
+    // --- End GitHub Direct Answer Logic ---
 
     // --- Main Processing Logic ---
     let anythingLLMThreadSlug = null;
@@ -349,13 +484,6 @@ async function handleSlackMessageEventInternal(event) {
                  continue;
             }
 
-            // Add feedback buttons if it's the last segment and response is substantive
-            if (isLastSegment && isSubstantiveResponse) {
-                console.log("[Slack Handler DEBUG] Adding feedback buttons to final segment.");
-                // Append feedback blocks to the list of blocks for this segment
-                blocksToSend = blocksToSend.concat(feedbackBlock);
-            }
-
             // Post the message for the current segment
             try {
                 // Add explicit length logging (less critical now, but can keep for debugging)
@@ -368,6 +496,19 @@ async function handleSlackMessageEventInternal(event) {
                 console.log(`[Slack Handler DEBUG] Fallback text for segment ${i+1}: "${fallbackText.substring(0, 50)}..."`);
                 await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: blocksToSend });
                 console.log(`[Slack Handler] Posted segment ${i + 1}/${segments.length}.`);
+
+                // **** ADDED: Post feedback buttons separately if this was the last segment ****
+                if (isLastSegment && isSubstantiveResponse) {
+                    try {
+                         console.log("[Slack Handler DEBUG] Posting feedback buttons separately after final segment.");
+                         await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: "Feedback:", blocks: feedbackBlock }); // Use a simple fallback text
+                         console.log("[Slack Handler] Posted feedback buttons separately.");
+                    } catch (feedbackPostError) {
+                         console.error(`[Slack Error] Failed to post feedback buttons separately:`, feedbackPostError.data?.error || feedbackPostError.message);
+                    }
+                }
+                // **** END ADDED SECTION ****
+
             } catch (postError) {
                 console.error(`[Slack Error] Failed post segment ${i + 1}:`, postError.data?.error || postError.message);
                 // Attempt to post a generic error message for this segment
