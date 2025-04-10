@@ -641,16 +641,19 @@ export async function handleInteraction(req, res) {
                      });
 
                      if (historyResult.ok && historyResult.messages) {
-                         // Find the button message index
-                         const buttonMessageIndex = historyResult.messages.findIndex(msg => msg.ts === messageTs);
+                         // Reverse the array to be chronological (oldest first)
+                         const chronologicalMessages = historyResult.messages.reverse();
+
+                         // Find the button message index IN THE REVERSED ARRAY
+                         const buttonMessageIndex = chronologicalMessages.findIndex(msg => msg.ts === messageTs);
                          
-                         if (buttonMessageIndex > 0) { // Ensure the button message was found and isn't the first one
-                            // Look at messages *before* the button message
-                            for (let j = buttonMessageIndex - 1; j >= 0; j--) {
-                                const potentialBotMsg = historyResult.messages[j];
+                         if (buttonMessageIndex > -1) { // Ensure the button message was found
+                            // Look at messages *before* the button message (lower indices)
+                            for (let j = buttonMessageIndex - 1; j >= 0; j--) { // Loop is now correct
+                                const potentialBotMsg = chronologicalMessages[j];
                                 // Check if it's from our bot (and ideally has content)
                                 if (potentialBotMsg.user === botUserId && potentialBotMsg.text) {
-                                     actualBotMessageText = potentialBotMsg.text; // Use the fallback text of the bot's message
+                                     actualBotMessageText = potentialBotMsg.text; // Use the fallback text
                                      console.log(`[Interaction Handler] Found preceding bot message text: "${actualBotMessageText.substring(0, 50)}..."`);
                                      break; // Found the most recent preceding bot message
                                 }
