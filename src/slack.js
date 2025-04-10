@@ -643,17 +643,14 @@ export async function handleInteraction(req, res) {
                 const feedbackValue = action.value;
                 let originalQuestionTs = null;
                 let responseSphere = null;
-                let mainMessageTsFromBlock = null; // <-- Added
 
                 if (blockId?.startsWith('feedback_')) {
-                    const parts = blockId.substring(9).split('_'); // Format: origTS_sphere_mainTS
+                    const parts = blockId.substring(9).split('_'); // Format: origTS_sphere
                     originalQuestionTs = parts[0];
-                    // Check lengths before accessing indices
                     if (parts.length > 1) { responseSphere = parts[1]; }
-                    if (parts.length > 2) { mainMessageTsFromBlock = parts[2]; } // <-- Added
                 }
                 // Updated log
-                console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}, MainMsgTS ${mainMessageTsFromBlock}`);
+                console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}`);
 
                 // Fetch original *user* question text
                 let originalQuestionText = null;
@@ -670,38 +667,47 @@ export async function handleInteraction(req, res) {
 
                 // Fetch the specific bot response message text using its TS
                 let actualBotMessageText = null;
-                if (mainMessageTsFromBlock) { // Only try if we got the TS
-                    try {
-                        console.log(`[Interaction Handler] Fetching specific message ${mainMessageTsFromBlock} in ${channelId}...`);
-                        const historyResult = await slack.conversations.history({
-                            channel: channelId,
-                            latest: mainMessageTsFromBlock,
-                            oldest: mainMessageTsFromBlock,
-                            inclusive: true,
-                            limit: 1
-                        });
-
-                        if (historyResult.ok && historyResult.messages && historyResult.messages.length > 0) {
-                            const mainBotMessage = historyResult.messages[0];
-                             console.log(`[Interaction Debug] Specific message check: ts=${mainBotMessage.ts}, user=${mainBotMessage.user}, text="${mainBotMessage.text?.substring(0,30)}..."`);
-                             if (mainBotMessage.user === botUserId && mainBotMessage.text) {
-                                 actualBotMessageText = mainBotMessage.text;
-                                 console.log(`[Interaction Handler] Found specific bot message text: "${actualBotMessageText.substring(0, 50)}..."`);
-                             } else {
-                                 console.warn(`[Interaction Handler] Message ${mainMessageTsFromBlock} not from bot or has no text.`);
-                             }
-                        } else {
-                            console.warn(`[Interaction Handler] Could not fetch specific message ${mainMessageTsFromBlock}.`);
-                        }
-                    } catch (historyError) {
-                         console.error(`[Interaction Handler] Error fetching specific message ${mainMessageTsFromBlock}:`, historyError.data?.error || historyError.message);
-                    }
+                // Remove the mainMessageTsFromBlock parsing for now, revert to relative history check
+                /*
+                if (mainMessageTsFromBlock) {
+                    // ... code to fetch specific message by TS ...
                 }
+                */
 
-                // Fallback if specific fetch failed
+                // --- REVISED logic: Fetch messages BEFORE button message & find first bot message ---
+                try {
+                    console.log(`[Interaction Handler - Rev3] Fetching history before ${messageTs} in ${channelId}...`);
+                    const historyResult = await slack.conversations.history({
+                        channel: channelId,
+                        latest: messageTs, // Fetch messages UP TO (but not including) the button message
+                        inclusive: false,
+                        limit: 5 // Fetch a few messages before the button message
+                    });
+
+                    // Results are newest-first. Iterate to find the first message from our bot.
+                    if (historyResult.ok && historyResult.messages && historyResult.messages.length > 0) {
+                         for (const precedingMessage of historyResult.messages) {
+                             console.log(`[Interaction Debug - Rev3] Checking history msg: ts=${precedingMessage.ts}, user=${precedingMessage.user}, text="${precedingMessage.text?.substring(0,30)}..."`);
+                             // Check if this immediately preceding message is from our bot and has text
+                             if (precedingMessage.user === botUserId && precedingMessage.text) {
+                                  actualBotMessageText = precedingMessage.text;
+                                  console.log(`[Interaction Handler - Rev3] Found preceding bot message text: "${actualBotMessageText.substring(0, 50)}..."`);
+                                  break; // Found the first (most recent) bot message before the buttons
+                             }
+                         }
+                    }
+                    
+                    if (!actualBotMessageText) {
+                         console.warn("[Interaction Handler - Rev3] Could not find preceding bot message text in history. Falling back.");
+                    }
+                 } catch (historyError) {
+                     console.error("[Interaction Handler - Rev3] Error fetching history:", historyError.data?.error || historyError.message);
+                 }
+                 // --- END REVISED logic ---
+            
                 if (!actualBotMessageText) {
-                    console.warn("[Interaction Handler] Could not find specific bot message text via block_id. Falling back to button message text.");
-                    actualBotMessageText = payload.message.text;
+                    // console.warn("[Interaction Handler] Could not find specific bot message text via block_id. Falling back to button message text."); // Comment out old warning
+                    actualBotMessageText = payload.message.text; // Fallback
                 }
 
                 // Store feedback data
@@ -710,11 +716,12 @@ export async function handleInteraction(req, res) {
                         feedback_value: feedbackValue,
                         user_id: userId,
                         channel_id: channelId,
-                        bot_message_ts: mainMessageTsFromBlock || messageTs, // <-- Use specific TS if available
+                        // Revert to using button message TS for feedback record consistency
+                        bot_message_ts: messageTs,
                         original_user_message_ts: originalQuestionTs || null,
                         action_id: actionId,
                         sphere_slug: responseSphere || null,
-                        bot_message_text: actualBotMessageText || null, // <-- Use fetched text
+                        bot_message_text: actualBotMessageText || null, // Use the retrieved text
                         original_user_message_text: originalQuestionText || null
                     });
                     console.log(`[Interaction Handler] Feedback stored: ${feedbackValue} from ${userId}`);
