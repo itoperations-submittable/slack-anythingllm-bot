@@ -490,10 +490,28 @@ export async function handleInteraction(req, res) {
 
                  // ** IMPORTANT: Need storeFeedback function accessible here **
                  // Assuming storeFeedback is imported or defined globally/in scope
-                 // await storeFeedback({ /* ... feedback data ... */ }); 
+                 // await storeFeedback({ /* ... feedback data ... */ });
                  // Since storeFeedback was removed from app.js, it needs to be handled differently.
                  // Easiest is to import it here if it's now in services.js or utils.js
-                 console.log("[Interaction Handler] storeFeedback call is currently commented out - requires import/access.");
+                 // console.log("[Interaction Handler] storeFeedback call is currently commented out - requires import/access.");
+
+                 // Store feedback data using the function defined above in this file
+                 try {
+                     await storeFeedback({
+                         feedback_value: feedbackValue,
+                         user_id: userId,
+                         channel_id: channelId,
+                         bot_message_ts: messageTs,
+                         original_user_message_ts: originalQuestionTs || null,
+                         action_id: actionId,
+                         sphere_slug: responseSphere || null,
+                         bot_message_text: payload.message.text || null,
+                         original_user_message_text: originalQuestionText || null
+                     });
+                     console.log(`[Interaction Handler] Feedback stored: ${feedbackValue} from ${userId}`);
+                 } catch (storeFeedbackError) {
+                     console.error(`[Interaction Handler] Error storing feedback:`, storeFeedbackError);
+                 }
 
                  // Update the original message to show feedback was received
                  try {
