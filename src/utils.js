@@ -352,16 +352,18 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
     // Remove any double-escaped newlines
     processedMarkdown = processedMarkdown.replace(/\\\\n/g, '');
     
-    // Replace double newlines (paragraphs) with single newlines for a single section
+    // Replace double newlines (paragraphs) with single newlines initially
     processedMarkdown = processedMarkdown.replace(/\n\n+/g, '\n'); 
     
     console.log(`[Utils/markdownToRichTextBlock] Processing markdown for single section, length: ${processedMarkdown.length}`);
 
     const sectionElements = [];
     
-    // Special handling for pure code blocks to use rich_text_preformatted
+    // Special handling for pure code blocks 
     const codeMatch = processedMarkdown.trim().match(/^```([\w]*)\n?([\s\S]*?)```$/);
-    if (codeMatch && processedMarkdown.trim().startsWith('```') && processedMarkdown.trim().endsWith('```')) {
+    let isPureCodeBlock = codeMatch && processedMarkdown.trim().startsWith('```') && processedMarkdown.trim().endsWith('```');
+    
+    if (isPureCodeBlock) {
          const codeContent = codeMatch[2];
          console.log(`[Utils/markdownToRichTextBlock] Detected pure code block, length: ${codeContent.length}`);
          // Use standard text element with code style for code blocks within rich text sections
@@ -371,6 +373,10 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
              "style": { "code": true }
          });
     } else {
+        // For non-code blocks, try adding extra newlines for spacing
+        console.log(`[Utils/markdownToRichTextBlock] Adding double newlines for potential spacing.`);
+        processedMarkdown = processedMarkdown.replace(/\n/g, '\n\n'); 
+        
         // Parse the entire processed text for inline formatting
         console.log(`[Utils/markdownToRichTextBlock] Parsing inline formatting for text block.`);
         parseInlineFormatting(processedMarkdown, sectionElements);
@@ -397,8 +403,8 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
 }
 
 /**
- * Parses inline markdown formatting (bold, italic, code, etc.) and adds appropriate elements
- * to the elements array
+ * Parses inline markdown formatting (bold, code, links) and adds appropriate elements
+ * to the elements array. ITALICS ARE IGNORED.
  * @param {string} text - The text to parse
  * @param {Array} elements - The array to add elements to
  */
@@ -409,7 +415,7 @@ function parseInlineFormatting(text, elements) {
     let i = 0;
     
     while (i < text.length) {
-        // Bold: *text* or **text**
+        // Bold: **text** or __text__ (double markers only)
         if ((text[i] === '*' && text[i+1] === '*') || 
             (text[i] === '_' && text[i+1] === '_')) {
             
@@ -441,35 +447,9 @@ function parseInlineFormatting(text, elements) {
             
             i += 2; // Skip closing markers
         }
-        // Italic: *text* or _text_ (single marker)
-        else if (text[i] === '*' || text[i] === '_') {
-            // Push any accumulated regular text first
-            if (currentText) {
-                elements.push({ "type": "text", "text": currentText });
-                currentText = '';
-            }
-            
-            const marker = text[i];
-            i++; // Skip the marker
-            let italicText = '';
-            
-            // Find the closing marker
-            while (i < text.length && text[i] !== marker) {
-                italicText += text[i];
-                i++;
-            }
-            
-            // Add italic text element
-            if (italicText) {
-                elements.push({ 
-                    "type": "text", 
-                    "text": italicText,
-                    "style": { "italic": true }
-                });
-            }
-            
-            i++; // Skip closing marker
-        }
+        // --- IGNORE ITALICS --- : *text* or _text_ (single marker)
+        // else if (text[i] === '*' || text[i] === '_') { ... }
+        
         // Inline code: `code`
         else if (text[i] === '`') {
             // Push any accumulated regular text first
@@ -538,10 +518,34 @@ function parseInlineFormatting(text, elements) {
                 }
                 
                 i++; // Skip closing parenthesis
+            } else {
+                 // Handle case where it looked like a link but wasn't, treat as text
+                 currentText += '[' + linkText + ']';
+                 // Don't increment i here, let the outer loop handle the character after ']'
             }
         }
         // Regular text
         else {
+            // Handle potential single * or _ that are not part of formatting
+            if (text[i] === '*' || text[i] === '_') {
+                 // Check if it's NOT followed by the same marker (already handled by bold)
+                 // or whitespace/end of string (likely just punctuation)
+                 if (!((text[i+1] === text[i]) || 
+                       (i + 1 >= text.length || /\s/.test(text[i+1])))) {
+                     // This looks like the start of an *ignored* italic block
+                     const marker = text[i];
+                     i++; // Consume the marker
+                     // Keep consuming until the closing marker or end of text
+                     while (i < text.length && text[i] !== marker) {
+                         currentText += text[i];
+                         i++;
+                     }
+                     if (i < text.length) {
+                         i++; // Consume the closing marker
+                     }
+                     continue; // Restart loop iteration
+                 }
+            }
             currentText += text[i];
             i++;
         }
