@@ -629,12 +629,42 @@ export async function handleInteraction(req, res) {
                      }
                  }
 
-                 // ** IMPORTANT: Need storeFeedback function accessible here **
-                 // Assuming storeFeedback is imported or defined globally/in scope
-                 // await storeFeedback({ /* ... feedback data ... */ });
-                 // Since storeFeedback was removed from app.js, it needs to be handled differently.
-                 // Easiest is to import it here if it's now in services.js or utils.js
-                 // console.log("[Interaction Handler] storeFeedback call is currently commented out - requires import/access.");
+                 // Fetch the message history to find the actual bot response text
+                 let actualBotMessageText = null;
+                 try {
+                     console.log(`[Interaction Handler] Fetching history around ${messageTs} in ${channelId} to find preceding bot message...`);
+                     const historyResult = await slack.conversations.history({
+                         channel: channelId,
+                         latest: messageTs, // Fetch messages up to and including the button message
+                         inclusive: true,
+                         limit: 5 // Look back a few messages
+                     });
+
+                     if (historyResult.ok && historyResult.messages) {
+                         // Find the button message index
+                         const buttonMessageIndex = historyResult.messages.findIndex(msg => msg.ts === messageTs);
+                         
+                         if (buttonMessageIndex > 0) { // Ensure the button message was found and isn't the first one
+                            // Look at messages *before* the button message
+                            for (let j = buttonMessageIndex - 1; j >= 0; j--) {
+                                const potentialBotMsg = historyResult.messages[j];
+                                // Check if it's from our bot (and ideally has content)
+                                if (potentialBotMsg.user === botUserId && potentialBotMsg.text) {
+                                     actualBotMessageText = potentialBotMsg.text; // Use the fallback text of the bot's message
+                                     console.log(`[Interaction Handler] Found preceding bot message text: "${actualBotMessageText.substring(0, 50)}..."`);
+                                     break; // Found the most recent preceding bot message
+                                }
+                            }
+                         }
+                     }
+                     if (!actualBotMessageText) {
+                         console.warn("[Interaction Handler] Could not find preceding bot message text. Falling back to button message text.");
+                         actualBotMessageText = payload.message.text; // Fallback
+                     }
+                 } catch (historyError) {
+                     console.error("[Interaction Handler] Error fetching history to find bot message text:", historyError.data?.error || historyError.message);
+                     actualBotMessageText = payload.message.text; // Fallback on error
+                 }
 
                  // Store feedback data using the function defined above in this file
                  try {
@@ -642,11 +672,11 @@ export async function handleInteraction(req, res) {
                          feedback_value: feedbackValue,
                          user_id: userId,
                          channel_id: channelId,
-                         bot_message_ts: messageTs,
+                         bot_message_ts: messageTs, // Still use the button message TS for identifying the feedback instance
                          original_user_message_ts: originalQuestionTs || null,
                          action_id: actionId,
                          sphere_slug: responseSphere || null,
-                         bot_message_text: payload.message.text || null,
+                         bot_message_text: actualBotMessageText || null, // Use the retrieved text
                          original_user_message_text: originalQuestionText || null
                      });
                      console.log(`[Interaction Handler] Feedback stored: ${feedbackValue} from ${userId}`);
