@@ -364,12 +364,11 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
     if (codeMatch && processedMarkdown.trim().startsWith('```') && processedMarkdown.trim().endsWith('```')) {
          const codeContent = codeMatch[2];
          console.log(`[Utils/markdownToRichTextBlock] Detected pure code block, length: ${codeContent.length}`);
+         // Use standard text element with code style for code blocks within rich text sections
          sectionElements.push({
-             "type": "rich_text_preformatted",
-             "elements": [{
-                 "type": "text", 
-                 "text": codeContent
-             }]
+             "type": "text", 
+             "text": codeContent,
+             "style": { "code": true }
          });
     } else {
         // Parse the entire processed text for inline formatting
