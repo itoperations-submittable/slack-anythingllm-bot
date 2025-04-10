@@ -14,7 +14,8 @@ import {
     RESET_CONVERSATION_COMMAND,
     databaseUrl,
     redisUrl,
-    githubToken
+    githubToken,
+    MIN_SUBSTANTIVE_RESPONSE_LENGTH
 } from './config.js';
 import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
@@ -352,25 +353,52 @@ async function handleSlackMessageEventInternal(event) {
 
         // 10. Process and Send Response
 
-        // 10a. Check for Substantive Response
+        // 10a. Refined Check for Substantive Response
         let isSubstantiveResponse = true;
-        const lowerRawReply = rawReply.toLowerCase().trim();
-        const nonSubstantivePatterns = [
-            'sorry', 'cannot', 'unable', "don't know", "do not know", 'no information',
-            'how can i help', 'conversation reset', 'context will be ignored',
-            'hello', 'hi ', 'hey ', 'thanks', 'thank you',
-            'encountered an error'
-            // Add more patterns as needed
-        ];
+        const lowerRawReplyTrimmed = rawReply.toLowerCase().trim();
+        
+        // Rule 1: Check length first
+        if (lowerRawReplyTrimmed.length < MIN_SUBSTANTIVE_RESPONSE_LENGTH) {
+            console.log(`[Slack Handler] Reply is short (${lowerRawReplyTrimmed.length} < ${MIN_SUBSTANTIVE_RESPONSE_LENGTH}). Skipping feedback buttons.`);
+            isSubstantiveResponse = false;
+        }
 
-        for (const pattern of nonSubstantivePatterns) {
-            if (lowerRawReply.includes(pattern)) {
-                console.log(`[Slack Handler] Non-substantive pattern found: "${pattern}". Skipping feedback buttons.`);
-                isSubstantiveResponse = false;
-                break;
+        // Rule 2: Check for exact, simple non-substantive replies (only if still substantive)
+        if (isSubstantiveResponse) {
+             const exactNonSubstantive = [
+                  'ok', 'done', 'hello', 'hi', 'hey', 'thanks', 'thank you'
+             ];
+             if (exactNonSubstantive.includes(lowerRawReplyTrimmed)) {
+                 console.log(`[Slack Handler] Exact non-substantive match found: "${lowerRawReplyTrimmed}". Skipping feedback buttons.`);
+                 isSubstantiveResponse = false;
+             }
+        }
+
+        // Rule 3: Check if the reply STARTS WITH common refusal or filler phrases (only if still substantive)
+        if (isSubstantiveResponse) {
+            const startingNonSubstantive = [
+                'sorry', 'i cannot', 'i am unable', "i don't know", "i do not know", 'i have no information',
+                'how can i help', 'conversation reset', 'context will be ignored',
+                'hello ', 'hi ', 'hey ', // Keep space for greetings followed by more
+                'encountered an error'
+            ];
+            for (const pattern of startingNonSubstantive) {
+                if (lowerRawReplyTrimmed.startsWith(pattern)) {
+                    console.log(`[Slack Handler] Non-substantive starting pattern found: "${pattern}". Skipping feedback buttons.`);
+                    isSubstantiveResponse = false;
+                    break;
+                }
             }
         }
 
+        // Rule 4: Check for specific error messages (using includes is okay here)
+        if (isSubstantiveResponse) {
+             if (lowerRawReplyTrimmed.includes('encountered an error processing your request')) {
+                  console.log(`[Slack Handler] Specific error message found. Skipping feedback buttons.`);
+                  isSubstantiveResponse = false;
+             }
+        }
+        
         // Define feedback blocks structure (avoids repetition)
         const feedbackButtonElements = [
             { "type": "button", "text": { "type": "plain_text", "text": "👎", "emoji": true }, "style": "danger", "value": "bad", "action_id": "feedback_bad" },
