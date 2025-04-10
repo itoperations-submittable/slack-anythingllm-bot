@@ -11,6 +11,8 @@ import {
 } from './config.js';
 
 // --- Event Deduplication ---
+
+// Function to check for duplicate events using Redis
 export async function isDuplicateRedis(eventId) {
     if (!redisUrl || !isRedisReady) { return false; } // Feature disabled if Redis isn't configured/ready
     const key = `${DUPLICATE_EVENT_REDIS_PREFIX}${eventId}`;
@@ -332,12 +334,13 @@ export function formatSlackMessage(textSegment) {
 }
 
 /**
- * Converts markdown text into an array of Slack rich_text_section elements.
- * Each element in the array represents a paragraph or a code block.
+ * Converts markdown text into a single Slack rich_text block containing one section.
+ * Parses inline formatting within that section.
  * @param {string} markdown - Markdown text to convert
- * @returns {Array<object> | null} - An array of Slack rich_text_section elements, or null if input is empty.
+ * @param {string} [blockId] - Optional block ID
+ * @returns {object | null} - A single Slack rich_text block, or null if input is empty.
  */
-export function markdownToRichTextSections(markdown) {
+export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}`) {
     if (!markdown) return null;
 
     // Process the markdown to ensure clean formatting
@@ -349,52 +352,49 @@ export function markdownToRichTextSections(markdown) {
     // Remove any double-escaped newlines
     processedMarkdown = processedMarkdown.replace(/\\\\n/g, '');
     
-    console.log(`[Utils/markdownToRichTextSections] Processing markdown of length: ${processedMarkdown.length}`);
-
-    const sections = [];
-
-    // Split by double newlines to create paragraphs
-    const paragraphs = processedMarkdown.split(/\n\n+/);
+    // Replace double newlines (paragraphs) with single newlines for a single section
+    processedMarkdown = processedMarkdown.replace(/\n\n+/g, '\n'); 
     
-    // For each paragraph, create a rich_text_section
-    paragraphs.forEach(paragraph => {
-        if (!paragraph.trim()) return;
-        
-        const sectionElements = [];
-        
-        // Handle code blocks - match triple backticks with optional language identifier
-        if (paragraph.trim().match(/^```[\w]*[\s\S]*```$/)) {
-            // Extract the code content
-            const codeMatch = paragraph.trim().match(/^```([\w]*)\n?([\s\S]*?)```$/);
-            const codeContent = codeMatch ? codeMatch[2] : paragraph.replace(/^```[\w]*\n?|```$/g, '');
-            
-            console.log(`[Utils/markdownToRichTextSections] Found code block with content length: ${codeContent.length}`);
-            
-            // For code, the section contains a preformatted element
-            sectionElements.push({
-                "type": "rich_text_preformatted",
-                "elements": [{
-                    "type": "text", 
-                    "text": codeContent
-                }]
-            });
+    console.log(`[Utils/markdownToRichTextBlock] Processing markdown for single section, length: ${processedMarkdown.length}`);
 
-            sections.push({ "type": "rich_text_section", "elements": sectionElements });
-            
-        } 
-        // Handle normal paragraphs with inline formatting
-        else {
-            // Parse the paragraph into formatted elements
-            parseInlineFormatting(paragraph, sectionElements);
-            // Only add the section if it resulted in elements
-            if (sectionElements.length > 0) {
-                sections.push({ "type": "rich_text_section", "elements": sectionElements });
-            }
-        }
-    });
+    const sectionElements = [];
     
-    console.log(`[Utils] Created ${sections.length} rich_text_section(s)`);
-    return sections.length > 0 ? sections : null;
+    // Special handling for pure code blocks to use rich_text_preformatted
+    const codeMatch = processedMarkdown.trim().match(/^```([\w]*)\n?([\s\S]*?)```$/);
+    if (codeMatch && processedMarkdown.trim().startsWith('```') && processedMarkdown.trim().endsWith('```')) {
+         const codeContent = codeMatch[2];
+         console.log(`[Utils/markdownToRichTextBlock] Detected pure code block, length: ${codeContent.length}`);
+         sectionElements.push({
+             "type": "rich_text_preformatted",
+             "elements": [{
+                 "type": "text", 
+                 "text": codeContent
+             }]
+         });
+    } else {
+        // Parse the entire processed text for inline formatting
+        console.log(`[Utils/markdownToRichTextBlock] Parsing inline formatting for text block.`);
+        parseInlineFormatting(processedMarkdown, sectionElements);
+    }
+
+    // Only create block if elements were generated
+    if (sectionElements.length === 0) {
+        console.log(`[Utils/markdownToRichTextBlock] No elements generated, returning null.`);
+        return null;
+    }
+
+    // Create the single rich_text block structure
+    const richTextBlock = {
+        "type": "rich_text",
+        "block_id": blockId,
+        "elements": [{
+            "type": "rich_text_section",
+            "elements": sectionElements
+        }]
+    };
+    
+    console.log(`[Utils] Created single rich_text block.`);
+    return richTextBlock;
 }
 
 /**
