@@ -660,36 +660,28 @@ export async function handleInteraction(req, res) {
                  // Fetch the message history to find the actual bot response text
                  let actualBotMessageText = null;
                  try {
-                     console.log(`[Interaction Handler] Fetching history around ${messageTs} in ${channelId} to find preceding bot message...`);
+                     console.log(`[Interaction Handler] Fetching history before ${messageTs} in ${channelId} to find preceding bot message...`);
                      const historyResult = await slack.conversations.history({
                          channel: channelId,
-                         latest: messageTs, // Fetch messages up to and including the button message
-                         inclusive: true,
-                         limit: 10 // Increased limit to 10
+                         latest: messageTs, // Fetch messages UP TO (but not including) the button message
+                         inclusive: false, // <-- Set to false
+                         limit: 1 // We only need the immediately preceding message
                      });
 
-                     if (historyResult.ok && historyResult.messages) {
-                         const chronologicalMessages = historyResult.messages.reverse();
-                         const buttonMessageIndex = chronologicalMessages.findIndex(msg => msg.ts === messageTs);
-                         
-                         console.log(`[Interaction Debug] History fetched. Button msg index in chrono array: ${buttonMessageIndex}. Total msgs fetched: ${chronologicalMessages.length}`);
-
-                         if (buttonMessageIndex > -1) {
-                            for (let j = buttonMessageIndex - 1; j >= 0; j--) {
-                                const potentialBotMsg = chronologicalMessages[j];
-                                // Log details of the message being checked
-                                console.log(`[Interaction Debug] Checking history msg at index ${j}: ts=${potentialBotMsg.ts}, user=${potentialBotMsg.user}, text="${potentialBotMsg.text?.substring(0,30)}..."`); 
-                                
-                                if (potentialBotMsg.user === botUserId && potentialBotMsg.text) {
-                                     actualBotMessageText = potentialBotMsg.text;
-                                     console.log(`[Interaction Handler] Found preceding bot message text at index ${j}: "${actualBotMessageText.substring(0, 50)}..."`);
-                                     break;
-                                }
-                            }
-                         }
+                     // historyResult.messages should be newest-first, so messages[0] is the one just before 'latest'
+                     if (historyResult.ok && historyResult.messages && historyResult.messages.length > 0) {
+                          const precedingMessage = historyResult.messages[0];
+                          console.log(`[Interaction Debug] Preceding message check: ts=${precedingMessage.ts}, user=${precedingMessage.user}, text="${precedingMessage.text?.substring(0,30)}..."`);
+                          
+                          // Check if this immediately preceding message is from our bot and has text
+                          if (precedingMessage.user === botUserId && precedingMessage.text) {
+                               actualBotMessageText = precedingMessage.text; 
+                               console.log(`[Interaction Handler] Found immediately preceding bot message text: "${actualBotMessageText.substring(0, 50)}..."`);
+                          }
                      }
+                     
                      if (!actualBotMessageText) {
-                         console.warn("[Interaction Handler] Could not find preceding bot message text. Falling back to button message text.");
+                         console.warn("[Interaction Handler] Could not find immediately preceding bot message text. Falling back to button message text.");
                          actualBotMessageText = payload.message.text; // Fallback
                      }
                  } catch (historyError) {
