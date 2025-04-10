@@ -407,7 +407,7 @@ async function handleSlackMessageEventInternal(event) {
         ];
         const feedbackBlock = [
             { "type": "divider" },
-			{ "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}_${mainMessageTs}`, "elements": feedbackButtonElements }
+            { "type": "actions", "block_id": `feedback_${originalTs}_${workspaceSlugForThread}`, "elements": feedbackButtonElements }
         ];
 
         // 10b. Extract Segments
