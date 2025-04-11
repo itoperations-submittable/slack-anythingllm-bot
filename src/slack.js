@@ -175,7 +175,6 @@ async function handleSlackMessageEventInternal(event) {
 
     // 3. Post Initial Processing Message (Asynchronously)
     let thinkingMessageTs = null;
-    // Create a promise for the thinking message but don't await it yet
     const thinkingMessagePromise = slack.chat.postMessage({
         channel,
         thread_ts: replyTarget,
@@ -188,6 +187,46 @@ async function handleSlackMessageEventInternal(event) {
         console.error("[Slack Error] Failed post initial thinking message:", slackError.data?.error || slackError.message);
         return null;
     });
+
+    // --- Determine AnythingLLM Thread and Workspace EARLY ---Moved from below---
+    let anythingLLMThreadSlug = null;
+    let workspaceSlugForThread = null;
+    try {
+        const existingMapping = await getAnythingLLMThreadMapping(channel, replyTarget);
+        if (existingMapping) {
+            anythingLLMThreadSlug = existingMapping.anythingllm_thread_slug;
+            workspaceSlugForThread = existingMapping.anythingllm_workspace_slug;
+            console.log(`[Slack Handler] Found existing AnythingLLM thread: ${workspaceSlugForThread}:${anythingLLMThreadSlug}`);
+        } else {
+            console.log(`[Slack Handler] No existing AnythingLLM thread found for Slack thread ${replyTarget}. Determining initial sphere...`);
+            let initialSphere = 'all'; // Default sphere
+            const overrideRegex = /#(\S+)/;
+            const match = cleanedQuery.match(overrideRegex);
+            if (match && match[1]) {
+                const potentialWorkspace = match[1];
+                const availableWorkspaces = await getWorkspaces(); // Fetch available slugs
+                if (availableWorkspaces.includes(potentialWorkspace)) {
+                    initialSphere = potentialWorkspace;
+                    console.log(`[Slack Handler] Manual workspace override confirmed for NEW thread: "${initialSphere}".`);
+                } else {
+                    console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not available. Defaulting new thread to 'all'.`);
+                }
+            }
+            workspaceSlugForThread = initialSphere;
+            anythingLLMThreadSlug = await createNewAnythingLLMThread(workspaceSlugForThread);
+            if (!anythingLLMThreadSlug) {
+                // If thread creation fails here, we probably can't proceed with *any* LLM call
+                throw new Error(`Failed to create a new AnythingLLM thread in workspace ${workspaceSlugForThread}.`);
+            }
+            await storeAnythingLLMThreadMapping(channel, replyTarget, workspaceSlugForThread, anythingLLMThreadSlug);
+        }
+    } catch (threadError) {
+        console.error("[Slack Handler] Error determining/creating AnythingLLM thread:", threadError);
+        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `⚠️ Oops! I had trouble connecting to the knowledge base thread.` }).catch(() => {});
+        const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{}); }
+        return; // Critical error, cannot proceed
+    }
+    // --- End Determine Thread Early ---
 
     // --- Direct Answer / Special Command Handling ---
 
@@ -290,7 +329,7 @@ async function handleSlackMessageEventInternal(event) {
                 }
                 console.log(`[Slack Handler] Requesting LLM summary for issue #${issueNumber}`);
                 const summarizePrompt = `Summarize the core problem described in the following GitHub issue details from gravityforms/backlog#${issueNumber}:\n\n${issueContext}`;
-                const summaryResponse = await queryLlm(null, null, summarizePrompt); 
+                const summaryResponse = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, summarizePrompt); 
                 if (!summaryResponse) throw new Error('LLM failed to provide a summary.');
                 console.log(`[Slack Handler] Posting LLM summary for issue #${issueNumber}`);
                 const summaryBlock = markdownToRichTextBlock(`*LLM Summary for issue #${issueNumber}:*\n${summaryResponse}`);
@@ -300,7 +339,7 @@ async function handleSlackMessageEventInternal(event) {
                 if (userPrompt) { analyzePrompt += ` specifically addressing the following: "${userPrompt}"`; }
                 else { analyzePrompt += ` and suggest potential causes or solutions.`; }
                 analyzePrompt += `\n\n**Full Context:**\n${issueContext}`;
-                const analysisResponse = await queryLlm(null, null, analyzePrompt); 
+                const analysisResponse = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, analyzePrompt); 
                 if (!analysisResponse) throw new Error('LLM failed to provide analysis.');
                 console.log(`[Slack Handler] Processing and sending LLM analysis for issue #${issueNumber}`);
                 const segments = extractTextAndCode(analysisResponse);
@@ -336,41 +375,9 @@ async function handleSlackMessageEventInternal(event) {
     // --- End Direct Answer / Special Command Handling ---
 
     // --- Main Processing Logic (Only runs if no direct answer/command was handled and returned) ---
-    let anythingLLMThreadSlug = null;
-    let workspaceSlugForThread = null;
+    // Thread/workspace slugs are already determined above
     try {
-        // 5. Determine Target Sphere & AnythingLLM Thread
-        const existingMapping = await getAnythingLLMThreadMapping(channel, replyTarget);
-
-        if (existingMapping) {
-            anythingLLMThreadSlug = existingMapping.anythingllm_thread_slug;
-            workspaceSlugForThread = existingMapping.anythingllm_workspace_slug;
-            console.log(`[Slack Handler] Found existing AnythingLLM thread: ${workspaceSlugForThread}:${anythingLLMThreadSlug}`);
-        } else {
-            console.log(`[Slack Handler] No existing AnythingLLM thread found for Slack thread ${replyTarget}. Determining initial sphere...`);
-            let initialSphere = 'all';
-            const overrideRegex = /#(\S+)/;
-            const match = cleanedQuery.match(overrideRegex);
-            if (match && match[1]) {
-                const potentialWorkspace = match[1];
-                const availableWorkspaces = await getWorkspaces();
-                if (availableWorkspaces.includes(potentialWorkspace)) {
-                    initialSphere = potentialWorkspace;
-                    console.log(`[Slack Handler] Manual workspace override confirmed for NEW thread: "${initialSphere}".`);
-                } else {
-                    console.warn(`[Slack Handler] Potential override "${potentialWorkspace}" is not available. Defaulting new thread to 'all'.`);
-                }
-            }
-            workspaceSlugForThread = initialSphere;
-            anythingLLMThreadSlug = await createNewAnythingLLMThread(workspaceSlugForThread);
-            if (!anythingLLMThreadSlug) {
-                throw new Error(`Failed to create a new AnythingLLM thread in workspace ${workspaceSlugForThread}.`);
-            }
-            await storeAnythingLLMThreadMapping(channel, replyTarget, workspaceSlugForThread, anythingLLMThreadSlug);
-        }
-
-        // 6. Update Thinking Message (Random theme) if it's ready
-        // Check if the thinking message was successfully posted before updating it
+        // Update Thinking Message (if thinking message promise resolved successfully)
         const messageTs = await thinkingMessagePromise;
         if (messageTs) {
             thinkingMessageTs = messageTs; // Ensure the variable is set for later cleanup
