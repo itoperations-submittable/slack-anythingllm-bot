@@ -231,6 +231,9 @@ async function handleSlackMessageEventInternal(event) {
     // --- Direct Answer / Special Command Handling ---
 
     // Check 1: Release Info
+    // --- DEBUG LOGGING ---
+    console.log(`[Slack Handler DEBUG] Checking for release trigger. Query lowercase: "${cleanedQuery.toLowerCase()}"`);
+    // --- END DEBUG LOGGING ---
     const isReleaseCommand = cleanedQuery.toLowerCase().startsWith('latest release');
     if (isReleaseCommand) {
         console.log("[Slack Handler] Release query detected.");
