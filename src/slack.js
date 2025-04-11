@@ -251,8 +251,15 @@ async function handleSlackMessageEventInternal(event) {
     }
 
     // Check 2: Issue Analysis
-    const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\s+(issue|backlog)\s+#(\d+)/i;
-    const issueTriggerMatch = !isReleaseCommand && cleanedQuery.match(issueTriggerRegex); // Only match if not a release command
+    const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\\s+(issue|backlog)\\s+#(\\d+)/i;
+    // --- DEBUG LOGGING --- 
+    console.log(`[Slack Handler DEBUG] Checking for issue trigger. isReleaseCommand: ${isReleaseCommand}`);
+    console.log(`[Slack Handler DEBUG] cleanedQuery for regex match: "${cleanedQuery}"`);
+    // --- END DEBUG LOGGING ---
+    const issueTriggerMatch = !isReleaseCommand && cleanedQuery.match(issueTriggerRegex);
+    // --- DEBUG LOGGING --- 
+    console.log(`[Slack Handler DEBUG] issueTriggerMatch result:`, issueTriggerMatch);
+    // --- END DEBUG LOGGING ---
 
     if (issueTriggerMatch) {
         const issueNumber = parseInt(issueTriggerMatch[3], 10);
