@@ -232,16 +232,19 @@ async function handleSlackMessageEventInternal(event) {
 
     // Check 1: Release Info
     // --- DEBUG LOGGING ---
-    console.log(`[Slack Handler DEBUG] Checking for release trigger. Query lowercase: "${cleanedQuery.toLowerCase()}"`);
+    console.log(`[Slack Handler DEBUG] Checking for release trigger. Query lowercase: \"${cleanedQuery.toLowerCase()}\"`);
     // --- END DEBUG LOGGING ---
-    const isReleaseCommand = cleanedQuery.toLowerCase().startsWith('latest release');
-    if (isReleaseCommand) {
+
+    // Use regex to check for and extract product name
+    const releaseMatchRegex = /latest (?:gravityforms\/)?([\w-]+(?: addon| checkout)?|\S+) release/i;
+    const releaseMatch = cleanedQuery.match(releaseMatchRegex);
+
+    if (releaseMatch) { // <<< Check if the regex matched successfully
         console.log("[Slack Handler] Release query detected.");
         // Check if octokit is needed/available - Assuming getLatestRelease still uses it
         if (octokit) { 
             try {
-                // ---> Start of existing release logic
-                const releaseMatch = cleanedQuery.match(/latest (?:gravityforms\/)?([\w-]+(?: addon| checkout)?|\S+) release/i);
+                // ---> Start of existing release logic (using releaseMatch defined above)
                 if (releaseMatch && releaseMatch[1]) {
                     let productName = releaseMatch[1].toLowerCase();
                     let owner = 'gravityforms'; 
@@ -295,10 +298,9 @@ async function handleSlackMessageEventInternal(event) {
     // Check 2: Issue Analysis
     const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\s+(issue|backlog)\s+#(\d+)/i;
     // --- DEBUG LOGGING --- 
-    console.log(`[Slack Handler DEBUG] Checking for issue trigger. isReleaseCommand: ${isReleaseCommand}`);
-    console.log(`[Slack Handler DEBUG] cleanedQuery for regex match: "${cleanedQuery}"`);
+    console.log(`[Slack Handler DEBUG] cleanedQuery for regex match: \"${cleanedQuery}\"`);
     // --- END DEBUG LOGGING ---
-    const issueTriggerMatch = !isReleaseCommand && cleanedQuery.match(issueTriggerRegex);
+    const issueTriggerMatch = !releaseMatch && cleanedQuery.match(issueTriggerRegex); // Only match if releaseMatch failed
     // --- DEBUG LOGGING --- 
     console.log(`[Slack Handler DEBUG] issueTriggerMatch result:`, issueTriggerMatch);
     // --- END DEBUG LOGGING ---
