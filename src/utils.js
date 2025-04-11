@@ -361,29 +361,17 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
     
     // Special handling for pure code blocks 
     const codeMatch = processedMarkdown.trim().match(/^```([\w]*)\n?([\s\S]*?)```$/);
+    let isPureCodeBlock = codeMatch && processedMarkdown.trim().startsWith('```') && processedMarkdown.trim().endsWith('```');
     
-    // Check if the entire input matches the fenced code block pattern
-    if (codeMatch && processedMarkdown.trim() === codeMatch[0].trim()) {
+    if (isPureCodeBlock) {
          const codeContent = codeMatch[2];
-         console.log(`[Utils/markdownToRichTextBlock] Detected pure code block, length: ${codeContent.length}. Using rich_text_preformatted.`);
-         
-         // --- Return a block with rich_text_preformatted --- 
-         const preformattedBlock = {
-             "type": "rich_text",
-             "block_id": blockId,
-             "elements": [{
-                 "type": "rich_text_preformatted",
-                 "elements": [{
-                     "type": "text",
-                     "text": codeContent // The raw code content
-                 }]
-                 // Note: Slack doesn't officially support border or language hints here
-             }]
-         };
-         console.log(`[Utils] Created single rich_text_preformatted block.`);
-         return preformattedBlock;
-         // --- End preformatted block --- 
-         
+         console.log(`[Utils/markdownToRichTextBlock] Detected pure code block, length: ${codeContent.length}`);
+         // Use standard text element with code style for code blocks within rich text sections
+         sectionElements.push({
+             "type": "text", 
+             "text": codeContent,
+             "style": { "code": true }
+         });
     } else {
         // For non-code blocks, try adding extra newlines for spacing
         console.log(`[Utils/markdownToRichTextBlock] Adding double newlines for potential spacing.`);
@@ -410,7 +398,7 @@ export function markdownToRichTextBlock(markdown, blockId = `block_${Date.now()}
         }]
     };
     
-    console.log(`[Utils] Created single rich_text_section block.`);
+    console.log(`[Utils] Created single rich_text block.`);
     return richTextBlock;
 }
 
@@ -567,4 +555,20 @@ function parseInlineFormatting(text, elements) {
     if (currentText) {
         elements.push({ "type": "text", "text": currentText });
     }
+}
+
+// --- GitHub Integration ---
+
+/**
+ * Fetches details for a specific issue from the gravityforms/backlog repository.
+ * Requires GITHUB_TOKEN to be set in the environment.
+ * @param {number} issueNumber - The number of the issue to fetch.
+ * @returns {Promise<object|null>} - An object containing issue details (title, body, url, comments) or null if not found or error.
+ */
+export async function getGithubIssueDetails(issueNumber) {
+    if (!githubToken) {
+        console.warn("[GitHub Utils] GITHUB_TOKEN is not set. Cannot fetch issue details.");
+        return null;
+    }
+    // ... existing code ...
 }
