@@ -8,7 +8,8 @@ import {
     DUPLICATE_EVENT_TTL,
     MAX_SLACK_BLOCK_TEXT_LENGTH,
     MAX_SLACK_BLOCK_CODE_LENGTH,
-    GITHUB_OWNER
+    GITHUB_OWNER,
+    githubToken // <-- Add import for githubToken
 } from './config.js';
 
 // --- Event Deduplication ---
