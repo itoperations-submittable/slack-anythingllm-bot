@@ -7,7 +7,8 @@ import {
     DUPLICATE_EVENT_REDIS_PREFIX,
     DUPLICATE_EVENT_TTL,
     MAX_SLACK_BLOCK_TEXT_LENGTH,
-    MAX_SLACK_BLOCK_CODE_LENGTH
+    MAX_SLACK_BLOCK_CODE_LENGTH,
+    GITHUB_OWNER
 } from './config.js';
 
 // --- Event Deduplication ---
@@ -566,9 +567,72 @@ function parseInlineFormatting(text, elements) {
  * @returns {Promise<object|null>} - An object containing issue details (title, body, url, comments) or null if not found or error.
  */
 export async function getGithubIssueDetails(issueNumber) {
-    if (!githubToken) {
+    if (!githubToken) { // Corrected variable name from GITHUB_TOKEN to githubToken (as imported)
         console.warn("[GitHub Utils] GITHUB_TOKEN is not set. Cannot fetch issue details.");
         return null;
     }
-    // ... existing code ...
+    if (!issueNumber || typeof issueNumber !== 'number' || !Number.isInteger(issueNumber) || issueNumber <= 0) {
+        console.error("[GitHub Utils] Invalid issue number provided:", issueNumber);
+        return null;
+    }
+
+    const owner = GITHUB_OWNER; // Always gravityforms
+    const repo = 'backlog'; // Always backlog
+    const issueUrl = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+    const commentsUrl = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`;
+    const headers = {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': `token ${githubToken}` // Corrected variable name
+    };
+
+    try {
+        console.log(`[GitHub Utils] Fetching issue details for ${owner}/${repo}#${issueNumber}`);
+        // Fetch main issue details
+        const issueResponse = await fetch(issueUrl, { headers });
+
+        if (!issueResponse.ok) {
+            console.error(`[GitHub Utils] Failed to fetch issue ${issueNumber}. Status: ${issueResponse.status} ${issueResponse.statusText}`);
+            return null; // Could be 404 Not Found or other error
+        }
+        const issueData = await issueResponse.json();
+
+        console.log(`[GitHub Utils] Fetching comments for ${owner}/${repo}#${issueNumber}`);
+        // Fetch issue comments
+        let commentsData = []; // Default to empty array
+        try {
+            const commentsResponse = await fetch(commentsUrl, { headers });
+            if (commentsResponse.ok) {
+                const rawComments = await commentsResponse.json();
+                // Ensure it's an array before assigning
+                if (Array.isArray(rawComments)) {
+                    commentsData = rawComments;
+                } else {
+                    console.warn(`[GitHub Utils] Comments response for issue ${issueNumber} was not an array.`);
+                }
+            } else {
+                // Log error but don't fail the whole process if comments fail
+                console.warn(`[GitHub Utils] Failed to fetch comments for issue ${issueNumber}. Status: ${commentsResponse.status} ${commentsResponse.statusText}`);
+            }
+        } catch (commentError) {
+            console.warn(`[GitHub Utils] Error fetching or parsing comments for issue ${issueNumber}:`, commentError);
+        }
+        
+        // Limit number of comments to keep context manageable (e.g., last 10)
+        const MAX_COMMENTS = 10;
+        const relevantComments = commentsData.slice(-MAX_COMMENTS);
+
+        return {
+            title: issueData?.title || 'N/A',
+            body: issueData?.body || '', // Default to empty string if no body
+            url: issueData?.html_url || `https://github.com/${owner}/${repo}/issues/${issueNumber}`,
+            comments: relevantComments.map(comment => ({
+                user: comment?.user?.login || 'unknown',
+                body: comment?.body || ''
+            })) || []
+        };
+
+    } catch (error) {
+        console.error(`[GitHub Utils] Error fetching details for ${owner}/${repo}#${issueNumber}:`, error);
+        return null;
+    }
 }
