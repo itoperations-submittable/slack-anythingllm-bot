@@ -208,6 +208,7 @@ async function handleSlackMessageEventInternal(event) {
                 'stripe': 'gravityformsstripe',
                 'authorize.net': 'gravityformsauthorizenet', // Example
                 'user registration': 'gravityformsuserregistration',
+                'core': 'gravityforms', // Added alias for core GF
                 // Add more abbreviations as needed
             };
 
@@ -239,8 +240,8 @@ async function handleSlackMessageEventInternal(event) {
                     const releaseInfo = await getLatestRelease(owner, repo);
                     if (releaseInfo) {
                         const publishedDate = new Date(releaseInfo.publishedAt).toLocaleDateString();
-                        // Simplify the message text format
-                        const messageText = `The latest release for ${owner}/${repo} is ${releaseInfo.tagName}. Published on ${publishedDate}. More info: <${releaseInfo.url}|Release Notes>`; // Added link
+                        // Simplify the message text format - REMOVED More Info link
+                        const messageText = `The latest release for ${owner}/${repo} is ${releaseInfo.tagName}. Published on ${publishedDate}.`;
                         const richTextBlock = markdownToRichTextBlock(messageText, `release_${owner}_${repo}`);
 
                         if (richTextBlock) {
