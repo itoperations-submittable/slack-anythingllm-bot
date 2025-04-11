@@ -329,7 +329,10 @@ async function handleSlackMessageEventInternal(event) {
                 }
                 console.log(`[Slack Handler] Requesting LLM summary for issue #${issueNumber}`);
                 const summarizePrompt = `Summarize the core problem described in the following GitHub issue details from gravityforms/backlog#${issueNumber}:\n\n${issueContext}`;
-                const summaryResponse = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, summarizePrompt); 
+                // --- DEBUG LLM CALL 1 --- 
+                console.log(`[Slack Handler DEBUG] Calling queryLlm (Summary). Workspace: ${workspaceSlugForThread}, Thread: ${anythingLLMThreadSlug}`);
+                // --- END DEBUG --- 
+                const summaryResponse = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, summarizePrompt);
                 if (!summaryResponse) throw new Error('LLM failed to provide a summary.');
                 console.log(`[Slack Handler] Posting LLM summary for issue #${issueNumber}`);
                 const summaryBlock = markdownToRichTextBlock(`*LLM Summary for issue #${issueNumber}:*\n${summaryResponse}`);
@@ -339,7 +342,10 @@ async function handleSlackMessageEventInternal(event) {
                 if (userPrompt) { analyzePrompt += ` specifically addressing the following: "${userPrompt}"`; }
                 else { analyzePrompt += ` and suggest potential causes or solutions.`; }
                 analyzePrompt += `\n\n**Full Context:**\n${issueContext}`;
-                const analysisResponse = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, analyzePrompt); 
+                // --- DEBUG LLM CALL 2 --- 
+                console.log(`[Slack Handler DEBUG] Calling queryLlm (Analysis). Workspace: ${workspaceSlugForThread}, Thread: ${anythingLLMThreadSlug}`);
+                // --- END DEBUG --- 
+                const analysisResponse = await queryLlm(workspaceSlugForThread, anythingLLMThreadSlug, analyzePrompt);
                 if (!analysisResponse) throw new Error('LLM failed to provide analysis.');
                 console.log(`[Slack Handler] Processing and sending LLM analysis for issue #${issueNumber}`);
                 const segments = extractTextAndCode(analysisResponse);
