@@ -192,86 +192,140 @@ async function handleSlackMessageEventInternal(event) {
     // --- Direct Answer / Special Command Handling ---
 
     // Check 1: Release Info
-    if (cleanedQuery.toLowerCase().startsWith('latest release')) {
+    const isReleaseCommand = cleanedQuery.toLowerCase().startsWith('latest release');
+    if (isReleaseCommand) {
         console.log("[Slack Handler] Release query detected.");
         // Check if octokit is needed/available - Assuming getLatestRelease still uses it
         if (octokit) { 
-            const releaseMatch = cleanedQuery.match(/latest (?:gravityforms\/)?([\w-]+(?: addon| checkout)?|\S+) release/i);
-            let productName = releaseMatch?.[1]?.toLowerCase().replace(/^gravityforms/, '').trim();
-            // ... (rest of release check logic, including try/catch and return) ...
-            // Make sure this block has a `return;` at the end if successful
             try {
-                // ... existing release try block ...
-                // Ensure successful handling ends with:
-                // console.log("[Slack Handler] Responded directly with GitHub release info.");
-                // ... delete thinking message ... 
-                // return; 
-
-                // Ensure failure handling (not found, error) also ends with:
-                // ... post error message ...
-                // ... delete thinking message ...
-                // return;
+                // ---> Start of existing release logic
+                const releaseMatch = cleanedQuery.match(/latest (?:gravityforms\/)?([\w-]+(?: addon| checkout)?|\S+) release/i);
+                if (releaseMatch && releaseMatch[1]) {
+                    let productName = releaseMatch[1].toLowerCase();
+                    let owner = 'gravityforms'; 
+                    let repo = null;
+                    const abbreviations = {
+                         'gf': 'gravityforms', 'ppcp': 'gravityformsppcp', 'paypal checkout': 'gravityformsppcp',
+                         'paypal': 'gravityformsppcp', 'stripe': 'gravityformsstripe', 'authorize.net': 'gravityformsauthorizenet',
+                         'user registration': 'gravityformsuserregistration', 'core': 'gravityforms'
+                    };
+                    if (productName === 'gravityflow') { repo = 'gravityflow'; }
+                    else if (abbreviations[productName]) { repo = abbreviations[productName]; }
+                    else {
+                         productName = productName.replace(/\s+addon$/, '').replace(/\s+checkout$/, '');
+                         repo = productName.startsWith('gravityforms') ? productName : `gravityforms${productName}`;
+                    }
+                    console.log(`[Slack Handler] Determined GitHub target: ${owner}/${repo}`);
+                    if (owner && repo) {
+                        const releaseInfo = await getLatestRelease(owner, repo);
+                        if (releaseInfo) {
+                            const publishedDate = new Date(releaseInfo.publishedAt).toLocaleDateString();
+                            const messageText = `The latest release for ${owner}/${repo} is ${releaseInfo.tagName}. Published on ${publishedDate}.`;
+                            const richTextBlock = markdownToRichTextBlock(messageText, `release_${owner}_${repo}`);
+                            if (richTextBlock) {
+                                await slack.chat.postMessage({
+                                     channel, thread_ts: replyTarget,
+                                     text: `The latest release for ${owner}/${repo} is ${releaseInfo.tagName} (Published on ${publishedDate})`,
+                                     blocks: [richTextBlock]
+                                });
+                                console.log("[Slack Handler] Responded directly with GitHub release info.");
+                                const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{}); }
+                                return; // <<< SUCCESSFUL RETURN
+                            }
+                        } else {
+                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `I couldn't find any releases for ${owner}/${repo}.` });
+                             const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{}); }
+                             return; // <<< HANDLED (NOT FOUND) RETURN
+                        }
+                    }
+                }
+                // ---> End of existing release logic
             } catch (githubError) {
                  console.error(`[Slack Handler] Error during GitHub release check:`, githubError);
-                 // Fall through ONLY if octokit was somehow available but the API call failed
+                 // Fall through ONLY if octokit was available but the API call failed
             }
         } else {
              console.warn("[Slack Handler] Octokit client not available for release check.");
              // Fall through to main LLM if octokit isn't ready
         }
     }
+
     // Check 2: Issue Analysis
-    else { // Only check for issues if it wasn't a release command
-        const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\\s+(issue|backlog)\\s+#(\\d+)/i;
-        const issueTriggerMatch = cleanedQuery.match(issueTriggerRegex);
+    const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\s+(issue|backlog)\s+#(\d+)/i;
+    const issueTriggerMatch = !isReleaseCommand && cleanedQuery.match(issueTriggerRegex); // Only match if not a release command
 
-        if (issueTriggerMatch) {
-            const issueNumber = parseInt(issueTriggerMatch[3], 10);
-            const userPrompt = cleanedQuery.substring(issueTriggerMatch[0].length).trim();
-            console.log(`[Slack Handler] GitHub issue analysis triggered for backlog #${issueNumber}. User prompt: \"${userPrompt}\"`);
+    if (issueTriggerMatch) {
+        const issueNumber = parseInt(issueTriggerMatch[3], 10);
+        const userPrompt = cleanedQuery.substring(issueTriggerMatch[0].length).trim();
+        console.log(`[Slack Handler] GitHub issue analysis triggered for backlog #${issueNumber}. User prompt: "${userPrompt}"`);
 
-            // Check for GITHUB_TOKEN before proceeding
-            if (!githubToken) {
-                 console.error("[Slack Handler] GITHUB_TOKEN is missing. Cannot perform issue analysis.");
-                 await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Sorry, I can't analyze GitHub issues because the GITHUB_TOKEN is not configured.` }).catch(() => {});
-                 const ts = await thinkingMessagePromise;
-                 if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
-                 return; // Stop processing
-            }
-
-            try {
-                await thinkingMessagePromise; // Ensure thinking message is posted
-                const issueDetails = await getGithubIssueDetails(issueNumber);
-
-                if (issueDetails) {
-                    // ... (Format context, two-step LLM call, post summary, post analysis) ...
-                    // This block MUST end with a `return;` after deleting the thinking message
-                    // Example end of successful issue analysis:
-                    // ... post final analysis segment ...
-                    // console.log(`[Slack Handler] Posted analysis segment ${i+1}/${segments.length}`);
-                    // ... delete thinking message ...
-                    // return;
-                } else {
-                    // Handle case where issue details couldn't be fetched
-                    await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `I couldn't fetch details for backlog issue #${issueNumber}. Please check if the number is correct and the GITHUB_TOKEN is valid.` });
-                    const ts = await thinkingMessagePromise;
-                    if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
-                    return; // Stop processing
-                }
-            } catch (error) {
-                console.error(`[Slack Handler] Error during GitHub issue analysis for #${issueNumber}:`, error);
-                await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Sorry, I encountered an error trying to analyze issue #${issueNumber}.` }).catch(() => {});
-                const ts = await thinkingMessagePromise;
-                if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
-                return; // Stop processing
-            }
-        } 
-        // If it wasn't a release command AND not an issue command, fall through
-        else {
-             console.log("[Slack Handler] No direct answer command detected, proceeding to main LLM.");
-             // Fall through to the main LLM logic below
+        // Check for GITHUB_TOKEN before proceeding
+        if (!githubToken) {
+             console.error("[Slack Handler] GITHUB_TOKEN is missing. Cannot perform issue analysis.");
+             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Sorry, I can't analyze GitHub issues because the GITHUB_TOKEN is not configured.` }).catch(() => {});
+             const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{}); }
+             return; // <<< HANDLED (CONFIG ERROR) RETURN
         }
-    }
+
+        try {
+            await thinkingMessagePromise; // Ensure thinking message is posted
+            const issueDetails = await getGithubIssueDetails(issueNumber);
+
+            if (issueDetails) {
+                // ---> Start of issue analysis logic
+                let issueContext = `**GitHub Issue:** gravityforms/backlog#${issueNumber}\n`;
+                issueContext += `**Title:** ${issueDetails.title}\n`;
+                issueContext += `**URL:** <${issueDetails.url}|View on GitHub>\n`;
+                issueContext += `**Body:**\n${issueDetails.body || '(No body)'}\n\n`;
+                if (issueDetails.comments && issueDetails.comments.length > 0) {
+                    issueContext += `**Recent Comments:**\n`;
+                    issueDetails.comments.forEach(comment => { issueContext += `*${comment.user}:* ${comment.body.substring(0, 300)}${comment.body.length > 300 ? '...' : ''}\n---\n`; });
+                }
+                console.log(`[Slack Handler] Requesting LLM summary for issue #${issueNumber}`);
+                const summarizePrompt = `Summarize the core problem described in the following GitHub issue details from gravityforms/backlog#${issueNumber}:\n\n${issueContext}`;
+                const summaryResponse = await queryLlm(null, null, summarizePrompt); 
+                if (!summaryResponse) throw new Error('LLM failed to provide a summary.');
+                console.log(`[Slack Handler] Posting LLM summary for issue #${issueNumber}`);
+                const summaryBlock = markdownToRichTextBlock(`*LLM Summary for issue #${issueNumber}:*\n${summaryResponse}`);
+                if (summaryBlock) { await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Summary for issue #${issueNumber}: ${summaryResponse}`, blocks: [summaryBlock] }); }
+                console.log(`[Slack Handler] Requesting LLM analysis for issue #${issueNumber}`);
+                let analyzePrompt = `Based on your summary ("${summaryResponse}") and the full context below, analyze issue gravityforms/backlog#${issueNumber}`;
+                if (userPrompt) { analyzePrompt += ` specifically addressing the following: "${userPrompt}"`; }
+                else { analyzePrompt += ` and suggest potential causes or solutions.`; }
+                analyzePrompt += `\n\n**Full Context:**\n${issueContext}`;
+                const analysisResponse = await queryLlm(null, null, analyzePrompt); 
+                if (!analysisResponse) throw new Error('LLM failed to provide analysis.');
+                console.log(`[Slack Handler] Processing and sending LLM analysis for issue #${issueNumber}`);
+                const segments = extractTextAndCode(analysisResponse);
+                for (let i = 0; i < segments.length; i++) {
+                    const blocksToSend = []; 
+                    const segment = segments[i];
+                    if (segment.type === 'text') { const block = markdownToRichTextBlock(segment.content); if (block) blocksToSend.push(block); }
+                    else if (segment.type === 'code') { const block = markdownToRichTextBlock(`\`\`\`${segment.language || ''}\n${segment.content}\`\`\``); if (block) blocksToSend.push(block); }
+                    if (blocksToSend.length > 0) { await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Analysis Part ${i+1}`, blocks: blocksToSend }); console.log(`[Slack Handler] Posted analysis segment ${i+1}/${segments.length}`); }
+                }
+                // ---> End of issue analysis logic
+
+                // Cleanup thinking message and return successfully
+                const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{}); }
+                return; // <<< SUCCESSFUL RETURN
+            } else {
+                // Handle case where issue details couldn't be fetched
+                await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `I couldn't fetch details for backlog issue #${issueNumber}. Please check if the number is correct and the GITHUB_TOKEN is valid.` });
+                const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{}); }
+                return; // <<< HANDLED (NOT FOUND) RETURN
+            }
+        } catch (error) {
+            console.error(`[Slack Handler] Error during GitHub issue analysis for #${issueNumber}:`, error);
+            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Sorry, I encountered an error trying to analyze issue #${issueNumber}.` }).catch(() => {});
+            const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{}); }
+            return; // <<< HANDLED (ERROR) RETURN
+        }
+    } 
+
+    // If neither command was handled and returned, proceed to main logic
+    console.log("[Slack Handler] No direct answer command detected, proceeding to main LLM.");
+    
     // --- End Direct Answer / Special Command Handling ---
 
     // --- Main Processing Logic (Only runs if no direct answer/command was handled and returned) ---
