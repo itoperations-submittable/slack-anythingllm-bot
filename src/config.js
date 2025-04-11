@@ -20,10 +20,12 @@ export const githubToken = process.env.GITHUB_TOKEN || null; // Optional: Used f
 
 // --- Bot Behavior Configuration ---
 export const MAX_SLACK_BLOCK_TEXT_LENGTH = 2950; // Slightly less than 3000 limit for safety
-export const MAX_SLACK_BLOCK_CODE_LENGTH = 2900; // Slightly less for code due to formatting overhead
+export const MAX_SLACK_BLOCK_CODE_LENGTH = process.env.MAX_SLACK_BLOCK_CODE_LENGTH ? parseInt(process.env.MAX_SLACK_BLOCK_CODE_LENGTH) : 2800; // Max length for text in a code block element
 export const RESET_CONVERSATION_COMMAND = 'reset conversation';
 export const WORKSPACE_OVERRIDE_COMMAND_PREFIX = '#'; // Prefix to trigger manual workspace selection
-export const MIN_SUBSTANTIVE_RESPONSE_LENGTH = 10; // Minimum length for substantive responses
+export const MIN_SUBSTANTIVE_RESPONSE_LENGTH = process.env.MIN_SUBSTANTIVE_RESPONSE_LENGTH ? parseInt(process.env.MIN_SUBSTANTIVE_RESPONSE_LENGTH) : 100; // Minimum length for a response to be considered substantive enough for feedback buttons
+export const GITHUB_OWNER = process.env.GITHUB_OWNER || 'gravityforms'; // Default GH owner
+
 // --- Cache Configuration ---
 export const DUPLICATE_EVENT_TTL = 600; // 10 minutes
 export const RESET_HISTORY_TTL = 300; // 5 minutes
