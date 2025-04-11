@@ -251,7 +251,7 @@ async function handleSlackMessageEventInternal(event) {
     }
 
     // Check 2: Issue Analysis
-    const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\\s+(issue|backlog)\\s+#(\\d+)/i;
+    const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\s+(issue|backlog)\s+#(\d+)/i;
     // --- DEBUG LOGGING --- 
     console.log(`[Slack Handler DEBUG] Checking for issue trigger. isReleaseCommand: ${isReleaseCommand}`);
     console.log(`[Slack Handler DEBUG] cleanedQuery for regex match: "${cleanedQuery}"`);
