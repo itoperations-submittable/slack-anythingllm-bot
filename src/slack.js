@@ -17,7 +17,7 @@ import {
     githubToken,
     MIN_SUBSTANTIVE_RESPONSE_LENGTH
 } from './config.js';
-import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock } from './utils.js';
+import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
 import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 import { Octokit } from '@octokit/rest';
@@ -191,89 +191,198 @@ async function handleSlackMessageEventInternal(event) {
 
     // --- GitHub Direct Answer Logic ---
     if (octokit) { // Only proceed if GitHub client is initialized
-        // Match patterns like "latest gravityforms release", "latest stripe addon release", "latest ppcp release"
-        const releaseMatch = cleanedQuery.match(/latest (?:gravityforms\/)?([\w-]+(?: addon| checkout)?|\S+) release/i);
+        // First check for release requests, then issue analysis
+        if (cleanedQuery.toLowerCase().startsWith('latest release')) {
+            // Match patterns like "latest gravityforms release", "latest stripe addon release", "latest ppcp release"
+            const releaseMatch = cleanedQuery.match(/latest (?:gravityforms\/)?([\w-]+(?: addon| checkout)?|\S+) release/i);
 
-        if (releaseMatch && releaseMatch[1]) {
-            let productName = releaseMatch[1].toLowerCase();
-            let owner = 'gravityforms'; // Default owner
-            let repo = null;
+            if (releaseMatch && releaseMatch[1]) {
+                let productName = releaseMatch[1].toLowerCase();
+                let owner = 'gravityforms'; // Default owner
+                let repo = null;
 
-            // Abbreviation mapping
-            const abbreviations = {
-                'gf': 'gravityforms',
-                'ppcp': 'gravityformsppcp',
-                'paypal checkout': 'gravityformsppcp',
-                'paypal': 'gravityformsppcp', // Assuming latest paypal means ppcp
-                'stripe': 'gravityformsstripe',
-                'authorize.net': 'gravityformsauthorizenet', // Example
-                'user registration': 'gravityformsuserregistration',
-                'core': 'gravityforms', // Added alias for core GF
-                // Add more abbreviations as needed
-            };
+                // Abbreviation mapping
+                const abbreviations = {
+                    'gf': 'gravityforms',
+                    'ppcp': 'gravityformsppcp',
+                    'paypal checkout': 'gravityformsppcp',
+                    'paypal': 'gravityformsppcp', // Assuming latest paypal means ppcp
+                    'stripe': 'gravityformsstripe',
+                    'authorize.net': 'gravityformsauthorizenet', // Example
+                    'user registration': 'gravityformsuserregistration',
+                    'core': 'gravityforms', // Added alias for core GF
+                    // Add more abbreviations as needed
+                };
 
-            console.log(`[Slack Handler] Potential release query detected for product: "${productName}"`);
+                console.log(`[Slack Handler] Potential release query detected for product: "${productName}"`);
 
-            // Handle specific cases and abbreviations
-            if (productName === 'gravityflow') {
-                repo = 'gravityflow';
-            } else if (abbreviations[productName]) {
-                repo = abbreviations[productName];
-            } else {
-                // Assume it's an add-on suffix, remove potential suffixes first
-                productName = productName.replace(/\s+addon$/, '').replace(/\s+checkout$/, '');
-
-                // Check if the user already provided the full name
-                if (productName.startsWith('gravityforms')) {
-                    repo = productName;
+                // Handle specific cases and abbreviations
+                if (productName === 'gravityflow') {
+                    repo = 'gravityflow';
+                } else if (abbreviations[productName]) {
+                    repo = abbreviations[productName];
                 } else {
-                     // Otherwise, prepend 'gravityforms' to the assumed suffix
-                    repo = `gravityforms${productName}`;
+                    // Assume it's an add-on suffix, remove potential suffixes first
+                    productName = productName.replace(/\s+addon$/, '').replace(/\s+checkout$/, '');
+
+                    // Check if the user already provided the full name
+                    if (productName.startsWith('gravityforms')) {
+                        repo = productName;
+                    } else {
+                         // Otherwise, prepend 'gravityforms' to the assumed suffix
+                        repo = `gravityforms${productName}`;
+                    }
+                }
+
+                console.log(`[Slack Handler] Determined GitHub target: ${owner}/${repo}`);
+
+                // Proceed if we have a valid owner/repo
+                if (owner && repo) {
+                    try {
+                        const releaseInfo = await getLatestRelease(owner, repo);
+                        if (releaseInfo) {
+                            const publishedDate = new Date(releaseInfo.publishedAt).toLocaleDateString();
+                            // Simplify the message text format - REMOVED More Info link
+                            const messageText = `The latest release for ${owner}/${repo} is ${releaseInfo.tagName}. Published on ${publishedDate}.`;
+                            const richTextBlock = markdownToRichTextBlock(messageText, `release_${owner}_${repo}`);
+
+                            if (richTextBlock) {
+                                await slack.chat.postMessage({
+                                    channel,
+                                    thread_ts: replyTarget,
+                                    // Update fallback text to match desired format
+                                    text: `The latest release for ${owner}/${repo} is ${releaseInfo.tagName} (Published on ${publishedDate})`, // Simplified fallback
+                                    blocks: [richTextBlock]
+                                });
+                                console.log("[Slack Handler] Responded directly with GitHub release info.");
+                                const ts = await thinkingMessagePromise;
+                                if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
+                                return; // Stop further processing
+                            }
+                        } else {
+                            // Handle case where release wasn't found
+                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `I couldn't find any releases for ${owner}/${repo}.` });
+                             const ts = await thinkingMessagePromise;
+                             if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
+                             return;
+                        }
+                    } catch (githubError) {
+                        console.error(`[Slack Handler] Error during GitHub direct answer for ${owner}/${repo}:`, githubError);
+                        // Fall through to LLM on error
+                    }
                 }
             }
+        }
+        // --- NEW: GitHub Issue Analysis Trigger ---
+        else {
+            // Regex to match various trigger verbs, issue/backlog, and the number
+            const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\\s+(issue|backlog)\\s+#(\\d+)/i;
+            const issueTriggerMatch = cleanedQuery.match(issueTriggerRegex);
 
-            console.log(`[Slack Handler] Determined GitHub target: ${owner}/${repo}`);
+            if (issueTriggerMatch) {
+                const issueNumber = parseInt(issueTriggerMatch[3], 10);
+                // Extract user prompt text that comes *after* the matched trigger phrase
+                const userPrompt = cleanedQuery.substring(issueTriggerMatch[0].length).trim();
 
-            // Proceed if we have a valid owner/repo
-            if (owner && repo) {
+                console.log(`[Slack Handler] GitHub issue analysis triggered for backlog #${issueNumber}. User prompt: \"${userPrompt}\"`);
+
                 try {
-                    const releaseInfo = await getLatestRelease(owner, repo);
-                    if (releaseInfo) {
-                        const publishedDate = new Date(releaseInfo.publishedAt).toLocaleDateString();
-                        // Simplify the message text format - REMOVED More Info link
-                        const messageText = `The latest release for ${owner}/${repo} is ${releaseInfo.tagName}. Published on ${publishedDate}.`;
-                        const richTextBlock = markdownToRichTextBlock(messageText, `release_${owner}_${repo}`);
+                    await thinkingMessagePromise; // Ensure thinking message is posted before API call
+                    const issueDetails = await getGithubIssueDetails(issueNumber);
 
-                        if (richTextBlock) {
-                            await slack.chat.postMessage({
-                                channel,
-                                thread_ts: replyTarget,
-                                // Update fallback text to match desired format
-                                text: `The latest release for ${owner}/${repo} is ${releaseInfo.tagName} (Published on ${publishedDate})`, // Simplified fallback
-                                blocks: [richTextBlock]
+                    if (issueDetails) {
+                        // Format context for LLM
+                        let issueContext = `**GitHub Issue:** gravityforms/backlog#${issueNumber}\n`;
+                        issueContext += `**Title:** ${issueDetails.title}\n`;
+                        issueContext += `**URL:** <${issueDetails.url}|View on GitHub>\n`;
+                        issueContext += `**Body:**\n${issueDetails.body || '(No body)'}\n\n`;
+                        
+                        if (issueDetails.comments && issueDetails.comments.length > 0) {
+                            issueContext += `**Recent Comments:**\n`;
+                            issueDetails.comments.forEach(comment => {
+                                issueContext += `*${comment.user}:* ${comment.body.substring(0, 300)}${comment.body.length > 300 ? '...' : ''}\n---\n`; // Limit comment length
                             });
-                            console.log("[Slack Handler] Responded directly with GitHub release info.");
-                            const ts = await thinkingMessagePromise;
-                            if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
-                            return; // Stop further processing
                         }
+
+                        // --- Two-Step LLM Call --- 
+                        // 1. Ask LLM to summarize
+                        console.log(`[Slack Handler] Requesting LLM summary for issue #${issueNumber}`);
+                        const summarizePrompt = `Summarize the core problem described in the following GitHub issue details from gravityforms/backlog#${issueNumber}:\n\n${issueContext}`;
+                        const summaryResponse = await queryLlm(null, null, summarizePrompt); // Use null thread/workspace for direct query? Or use default? TBD
+                        
+                        if (!summaryResponse) throw new Error('LLM failed to provide a summary.');
+                        
+                        console.log(`[Slack Handler] Posting LLM summary for issue #${issueNumber}`);
+                        const summaryBlock = markdownToRichTextBlock(`*LLM Summary for issue #${issueNumber}:*\n${summaryResponse}`);
+                        if (summaryBlock) {
+                             await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Summary for issue #${issueNumber}: ${summaryResponse}`, blocks: [summaryBlock] });
+                        }
+                        
+                        // 2. Ask LLM to analyze based on summary and context
+                        console.log(`[Slack Handler] Requesting LLM analysis for issue #${issueNumber}`);
+                        let analyzePrompt = `Based on your summary ("${summaryResponse}") and the full context below, analyze issue gravityforms/backlog#${issueNumber}`;
+                        if (userPrompt) {
+                            analyzePrompt += ` specifically addressing the following: "${userPrompt}"`;
+                        } else {
+                            analyzePrompt += ` and suggest potential causes or solutions.`;
+                        }
+                        analyzePrompt += `\n\n**Full Context:**\n${issueContext}`;
+                        
+                        const analysisResponse = await queryLlm(null, null, analyzePrompt); // Use null thread/workspace again?
+                        
+                        if (!analysisResponse) throw new Error('LLM failed to provide analysis.');
+                        
+                        // --- Send final analysis to Slack ---
+                        console.log(`[Slack Handler] Processing and sending LLM analysis for issue #${issueNumber}`);
+                        const segments = extractTextAndCode(analysisResponse);
+                        let fallbackText = `Analysis for issue #${issueNumber}: ${analysisResponse.substring(0, 200)}`;
+                        // ... (reuse existing segment posting logic) ...
+                         for (let i = 0; i < segments.length; i++) {
+                             // ... logic to convert segment to blocks ...
+                             const blocksToSend = []; // Placeholder
+                             const segment = segments[i];
+                             const isLastSegment = i === segments.length - 1;
+                             // Populate blocksToSend based on segment type (text/code)
+                             if (segment.type === 'text') {
+                                 const block = markdownToRichTextBlock(segment.content);
+                                 if (block) blocksToSend.push(block);
+                             } else if (segment.type === 'code') {
+                                 const block = markdownToRichTextBlock(`\\\`\\\`\\\`${segment.language || ''}\\n${segment.content}\\\`\\\`\\\``);
+                                 if (block) blocksToSend.push(block);
+                             }
+
+                             if (blocksToSend.length > 0) {
+                                 await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Analysis Part ${i+1}`, blocks: blocksToSend });
+                                 console.log(`[Slack Handler] Posted analysis segment ${i+1}/${segments.length}`);
+                             }
+                         }
+                        // --- End sending analysis ---
+
+                        // Cleanup thinking message
+                        const ts = await thinkingMessagePromise; // Re-await in case it resolved late
+                        if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
+                        return; // Stop further processing for this event
+
                     } else {
-                        // Handle case where release wasn't found
-                         await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `I couldn't find any releases for ${owner}/${repo}.` });
-                         const ts = await thinkingMessagePromise;
-                         if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
-                         return;
+                        // Handle case where issue details couldn't be fetched
+                        await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `I couldn't fetch details for backlog issue #${issueNumber}. Please check if the number is correct and the GITHUB_TOKEN is valid.` });
+                        const ts = await thinkingMessagePromise; // Re-await
+                        if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
+                        return;
                     }
-                } catch (githubError) {
-                    console.error(`[Slack Handler] Error during GitHub direct answer for ${owner}/${repo}:`, githubError);
-                    // Fall through to LLM on error
+                } catch (error) {
+                    console.error(`[Slack Handler] Error during GitHub issue analysis for #${issueNumber}:`, error);
+                    await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Sorry, I encountered an error trying to analyze issue #${issueNumber}.` }).catch(() => {});
+                    const ts = await thinkingMessagePromise; // Re-await
+                    if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(delErr => console.warn("Failed delete thinking message:", delErr.data?.error || delErr.message)); }
+                    return;
                 }
             }
         }
     }
-    // --- End GitHub Direct Answer Logic ---
+    // --- End GitHub Issue Analysis Trigger ---
 
-    // --- Main Processing Logic ---
+    // --- Main Processing Logic (Continues if no direct answer) ---
     let anythingLLMThreadSlug = null;
     let workspaceSlugForThread = null;
     try {
