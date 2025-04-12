@@ -1,25 +1,21 @@
 import { WebClient } from '@slack/web-api';
 import { createEventAdapter } from '@slack/events-api';
 import {
-    slackToken,
-    slackSigningSecret,
+    signingSecret,
+    botToken,
+    appToken,
     botUserId,
-    RESET_HISTORY_REDIS_PREFIX,
-    RESET_HISTORY_TTL,
-    THREAD_WORKSPACE_PREFIX,
-    THREAD_WORKSPACE_TTL,
-    WORKSPACE_OVERRIDE_COMMAND_PREFIX,
-    MAX_SLACK_BLOCK_TEXT_LENGTH,
-    MAX_SLACK_BLOCK_CODE_LENGTH,
-    RESET_CONVERSATION_COMMAND,
-    databaseUrl,
+    developerId,
+    workspaceMapping,
+    fallbackWorkspace,
+    enableUserWorkspaces,
+    userWorkspaceMapping,
     redisUrl,
     githubToken,
-    MIN_SUBSTANTIVE_RESPONSE_LENGTH,
     githubWorkspaceSlug,
-    logToLogSnag
+    MIN_SUBSTANTIVE_RESPONSE_LENGTH
 } from './config.js';
-import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails, callGithubApi } from './utils.js';
+import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails, callGithubApi, logToLogSnag } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
 import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 import { Octokit } from '@octokit/rest';
