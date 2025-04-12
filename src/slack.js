@@ -488,63 +488,52 @@ async function handleSlackMessageEventInternal(event) {
                 }
                 // --- Format the response --- END
             
-                // --- Post the final (formatted or raw) response back to Slack --- START
-                // Wrap Slack posting logic in its own try...catch
-                try {
-                    console.log("[GitHub API] Preparing final message for Slack.");
-                    const responseBlock = markdownToRichTextBlock(finalResponseText);
-            
+                // --- Post the final (formatted or raw) response back to Slack (Chunked) --- START
+                console.log("[GitHub API] Splitting final response for Slack.");
+                // Use the general text length limit for splitting the potentially formatted response
+                const chunks = splitMessageIntoChunks(finalResponseText, MAX_SLACK_BLOCK_TEXT_LENGTH);
+                console.log(`[GitHub API] Split into ${chunks.length} chunk(s).`);
+
+                for (let i = 0; i < chunks.length; i++) {
+                    const chunk = chunks[i];
+                    console.log(`[GitHub API] Processing chunk ${i + 1}/${chunks.length}`);
+                    const responseBlock = markdownToRichTextBlock(chunk);
                     if (responseBlock) {
                         await slack.chat.postMessage({
                             channel: channel,
                             thread_ts: replyTarget,
-                            text: finalResponseText.substring(0, 200), // Use start of text as fallback
+                            text: chunk.substring(0, 200), // Use start of chunk text as fallback
                             blocks: [responseBlock]
                         });
-                        console.log("[GitHub API] Posted final response block to Slack.");
                     } else {
-                        // Fallback to plain text if block generation fails
-                        console.warn("[GitHub API] Failed to generate block for final response. Sending plain text.");
+                        // Fallback to plain text if block generation fails for a chunk
+                        console.warn(`[GitHub API] Failed to generate block for chunk ${i + 1}. Sending plain text.`);
                         await slack.chat.postMessage({
-                            channel: channel,
-                            thread_ts: replyTarget,
-                            text: finalResponseText
+                             channel: channel,
+                             thread_ts: replyTarget,
+                             text: chunk
                         });
-                        console.log("[GitHub API] Posted final response as plain text to Slack.");
-                    } // End if (responseBlock)
-
-                    // --- Cleanup Thinking Message --- START
-                    try {
-                        const tsToDelete = await thinkingMessagePromise; // Ensure promise is resolved
-                        if (tsToDelete) {
-                            console.log(`[GitHub API] Deleting thinking message (ts: ${tsToDelete}).`);
-                            await slack.chat.delete({ channel: channel, ts: tsToDelete });
-                        }
-                    } catch(deleteError) {
-                        console.warn("[GitHub API] Failed to delete thinking message:", deleteError.data?.error || deleteError.message);
                     }
-                    // --- Cleanup Thinking Message --- END
-
-                } catch (slackPostError) {
-                    // Catch errors specifically from posting to Slack
-                    console.error('[GitHub API] Error posting successful response to Slack:', slackPostError);
-                    // Log the error. You might optionally try to send a very basic error
-                    // message back to Slack here, but be aware that might also fail.
-                    // Example:
-                    /*
-                    try {
-                        await slack.chat.postMessage({
-                            channel: channel,
-                            thread_ts: replyTarget,
-                            text: `[GitHub API] Got the data, but failed to post the full response back here due to an error: ${slackPostError.message}`
-                        });
-                    } catch (nestedSlackError) {
-                         console.error('[GitHub API] Failed even to post the Slack error message back:', nestedSlackError);
+                    // Add a small delay between posting chunks to avoid rate limits and improve readability
+                    if (chunks.length > 1 && i < chunks.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay
                     }
-                    */
                 }
-                // --- Post the final response back to Slack --- END
-            
+                console.log("[GitHub API] Finished posting all chunks.");
+                // --- Post the final (formatted or raw) response back to Slack (Chunked) --- END
+
+                // --- Cleanup Thinking Message --- START
+                try {
+                    const tsToDelete = await thinkingMessagePromise; // Ensure promise is resolved
+                    if (tsToDelete) {
+                        console.log(`[GitHub API] Deleting thinking message (ts: ${tsToDelete}).`);
+                        await slack.chat.delete({ channel: channel, ts: tsToDelete });
+                    }
+                } catch(deleteError) {
+                    console.warn("[GitHub API] Failed to delete thinking message:", deleteError.data?.error || deleteError.message);
+                }
+                // --- Cleanup Thinking Message --- END
+
             } catch (apiError) { // Catch errors specifically from the GitHub API call
                 console.error('[GitHub API] Error calling GitHub API:', apiError);
             
