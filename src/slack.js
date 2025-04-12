@@ -396,20 +396,36 @@ async function handleSlackMessageEventInternal(event) {
             }
 
             // Ensure the response is treated as text, even if null initially
-            const responseText = llmResponse || ''; 
+            const responseText = llmResponse || '';
+
+            // --- Clean the response text: Remove markdown code fences --- START
+            let cleanedJsonString = responseText.trim();
+            if (cleanedJsonString.startsWith('```json')) {
+                cleanedJsonString = cleanedJsonString.substring(7); // Remove ```json
+            }
+            if (cleanedJsonString.startsWith('```')) { // Handle case with just ```
+                 cleanedJsonString = cleanedJsonString.substring(3);
+            }
+            if (cleanedJsonString.endsWith('```')) {
+                cleanedJsonString = cleanedJsonString.substring(0, cleanedJsonString.length - 3);
+            }
+            cleanedJsonString = cleanedJsonString.trim(); // Trim again after removing fences
+            // --- Clean the response text: Remove markdown code fences --- END
 
             let apiDetails;
             try {
-                // Attempt to parse, handle empty string gracefully
-                if (responseText.trim() === '') throw new Error('LLM response text was empty.'); 
-                apiDetails = JSON.parse(responseText);
+                // Attempt to parse the cleaned string
+                if (cleanedJsonString === '') throw new Error('LLM response text was empty after cleaning.');
+                apiDetails = JSON.parse(cleanedJsonString);
             } catch (parseError) {
-                console.error('[GitHub API] Failed to parse LLM response as JSON:', parseError);
+                console.error('[GitHub API] Failed to parse cleaned LLM response as JSON:', parseError);
+                console.error('[GitHub API] Original response text:', responseText); // Log original for debugging
+                console.error('[GitHub API] Cleaned string before parse attempt:', cleanedJsonString);
                 await slack.chat.postMessage({
                     channel: channel,
                     thread_ts: replyTarget,
-                    // Use responseText in the error message
-                    text: `⚠️ Sorry, I couldn't understand the API instructions from the GitHub knowledge base. The response wasn't valid JSON.\n\nRaw response: \`\`\`${responseText}\`\`\`` 
+                    // Show the *original* raw response in the error message
+                    text: `⚠️ Sorry, I couldn't understand the API instructions from the GitHub knowledge base. The response wasn't valid JSON even after cleaning.\n\nRaw response: \`\`\`${responseText}\`\`\``
                 });
                 return;
             }
