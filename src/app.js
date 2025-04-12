@@ -11,8 +11,8 @@ import pg from 'pg';
 // Import configuration
 import {
     port,
-    slackSigningSecret,
-    slackToken,
+    signingSecret,
+    botToken,
     botUserId,
     anythingLLMBaseUrl,
     anythingLLMApiKey,
@@ -46,7 +46,7 @@ import { slackEvents, handleSlackEvent, handleInteraction } from './slack.js';
 const app = express();
 
 // --- Input Validation ---
-if (!slackSigningSecret || !slackToken || !anythingLLMBaseUrl || !anythingLLMApiKey) {
+if (!signingSecret || !botToken || !anythingLLMBaseUrl || !anythingLLMApiKey) {
     console.error("Missing critical environment variables (SLACK_SIGNING_SECRET, SLACK_BOT_TOKEN, LLM_API_BASE_URL, LLM_API_KEY)");
     process.exit(1);
 }

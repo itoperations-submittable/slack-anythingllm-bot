@@ -21,8 +21,8 @@ import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 import { Octokit } from '@octokit/rest';
 
 // Initialize Slack clients
-export const slack = new WebClient(slackToken);
-export const slackEvents = createEventAdapter(slackSigningSecret, { includeBody: true });
+export const slack = new WebClient(botToken);
+export const slackEvents = createEventAdapter(signingSecret, { includeBody: true });
 
 // +++ Start GitHub Integration +++
 let octokit;
