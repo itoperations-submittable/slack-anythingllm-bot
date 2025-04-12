@@ -401,7 +401,7 @@ async function handleSlackMessageEventInternal(event) {
                 console.error('[GitHub API] Failed to parse LLM response as JSON:', parseError);
                 await slack.chat.postMessage({
                     channel: channel,
-                    thread_ts: thread_ts || ts, // Use event.ts if thread_ts is null
+                    thread_ts: replyTarget,
                     text: `⚠️ Sorry, I couldn't understand the API instructions from the GitHub knowledge base. The response wasn't valid JSON.\\n\\nRaw response: \`\`\`${llmResponse.textResponse}\`\`\``
                 });
                 return;
@@ -416,7 +416,7 @@ async function handleSlackMessageEventInternal(event) {
                 // Post the result back to Slack (as JSON for now)
                 await slack.chat.postMessage({
                     channel: channel,
-                    thread_ts: thread_ts || ts,
+                    thread_ts: replyTarget,
                     text: `Here is the response from the GitHub API:\n\`\`\`json\n${JSON.stringify(githubResponse, null, 2)}\n\`\`\``
                 });
 
@@ -424,7 +424,7 @@ async function handleSlackMessageEventInternal(event) {
                 console.error('[GitHub API] Error calling GitHub API:', apiError);
                 await slack.chat.postMessage({
                     channel: channel,
-                    thread_ts: thread_ts || ts,
+                    thread_ts: replyTarget,
                     text: `Sorry, I encountered an error while calling the GitHub API: ${apiError.message}`
                 });
             }
@@ -433,7 +433,7 @@ async function handleSlackMessageEventInternal(event) {
             console.error('[GitHub API] Error querying GitHub workspace LLM:', llmError);
             await slack.chat.postMessage({
                 channel: channel,
-                thread_ts: thread_ts || ts, // Use event.ts if thread_ts is null
+                thread_ts: replyTarget,
                 text: `Sorry, I encountered an error while trying to figure out the GitHub API call: ${llmError.message}`
             });
         }

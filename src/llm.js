@@ -108,41 +108,78 @@ export async function createNewAnythingLLMThread(sphere) {
     }
 }
 
-// --- Main LLM Chat Function (MODIFIED to use Thread Endpoint) ---
-// Now requires anythingLLMThreadSlug, uses thread chat endpoint, and only sends current message.
-// Removed sessionId parameter.
-export async function queryLlm(sphere, anythingLLMThreadSlug, inputText) {
-    console.log(`[LLM Service/queryLlm] Querying sphere: ${sphere}, thread: ${anythingLLMThreadSlug}`);
-    
-    if (!anythingLLMThreadSlug) {
-         console.error('[LLM Service/queryLlm] Error: anythingLLMThreadSlug is required but was not provided.');
-         throw new Error('Internal error: Missing AnythingLLM thread slug.');
+// --- Main LLM Chat Function (MODIFIED to handle both workspace and thread chats) ---
+export async function queryLlm(sphere, anythingLLMThreadSlug, inputText, mode = 'chat', attachments = []) {
+    console.log(`[LLM Service/queryLlm] Querying sphere: ${sphere}, thread: ${anythingLLMThreadSlug}, mode: ${mode}`);
+
+    if (!sphere) {
+        console.error('[LLM Service/queryLlm] Error: sphere (workspace slug) is required but was not provided.');
+        throw new Error('Internal error: Missing workspace slug.');
     }
-    
+
+    // Construct the endpoint URL based on whether a thread slug is provided
+    const endpointUrl = anythingLLMThreadSlug
+        ? `${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/thread/${anythingLLMThreadSlug}/chat`
+        : `${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/chat`;
+
+    console.log(`[LLM Service/queryLlm] Using endpoint: ${endpointUrl}`);
+
     // Add instruction to not include context references in the response
-    const enhancedInputText = `${inputText}\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations. Keep your response concise and to the point unless explicitly asked for detailed information.`;
-    
+    // Apply this carefully - maybe only needed for thread chats?
+    // For now, applying to all.
+    const enhancedInputText = `${inputText}\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations.`;
+
     const requestBody = {
-        message: enhancedInputText, // Send enhanced message with instruction
-        mode: 'chat' // Changed from 'query' to 'chat' for more conversational responses
+        message: enhancedInputText,
+        mode: mode, // Use the provided mode ('chat' or 'query')
+        // attachments: attachments // Add attachments if needed later
     };
 
-    console.log("[LLM Service/queryLlm] Request Body (Thread Chat):", JSON.stringify(requestBody, null, 2));
+    // Log body carefully, remove attachments if sensitive
+    console.log("[LLM Service/queryLlm] Request Body:", JSON.stringify({ ...requestBody, attachments: attachments.length > 0 ? `[${attachments.length} attachment(s)]` : '[]' }, null, 2));
 
     try {
         const llmResponse = await axios.post(
-            `${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/thread/${anythingLLMThreadSlug}/chat`,
+            endpointUrl,
             requestBody,
             {
                 headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
-                timeout: 90000, // 90s timeout for final answer
+                timeout: 90000, // 90s timeout
             }
         );
-        return llmResponse.data.textResponse || null; // Return null if no textResponse
+
+        // Check the response structure
+        if (!llmResponse || !llmResponse.data) {
+            console.error('[LLM Service/queryLlm] Error: Empty or invalid response from LLM API');
+            throw new Error('LLM API returned an empty or invalid response.');
+        }
+
+        // Log the raw response for debugging
+        console.log("[LLM Service/queryLlm] Raw API Response:", JSON.stringify(llmResponse.data, null, 2));
+
+        // Extract text response - handle potential variations in structure
+        // Common fields are 'textResponse' or sometimes nested within 'choices'
+        let textResponse = llmResponse.data.textResponse || null;
+
+        // Add checks for other potential structures if needed based on API behavior
+        // if (!textResponse && llmResponse.data.choices?.[0]?.message?.content) {
+        //     textResponse = llmResponse.data.choices[0].message.content;
+        // }
+
+        if (textResponse === null) {
+             console.warn('[LLM Service/queryLlm] Warning: No textResponse field found in LLM API response.', llmResponse.data);
+             // You might want to return the full response or throw an error depending on requirements
+             // For now, returning null
+             return null;
+        }
+        
+        return textResponse;
+
     } catch (error) {
-        console.error(`[LLM Error - Sphere: ${sphere}, Thread: ${anythingLLMThreadSlug}]`, error.response?.data || error.message);
-        // More specific error message
-        throw new Error(`LLM query failed for sphere ${sphere}, thread ${anythingLLMThreadSlug}: ${error.message}`); 
+        const errorContext = error.response?.data || error.message;
+        const errorMsg = `LLM query failed for sphere ${sphere}${anythingLLMThreadSlug ? ", thread "+anythingLLMThreadSlug : ''}: ${errorContext}`; 
+        console.error(`[LLM Error - ${errorContext}]`, errorMsg);
+        throw new Error(errorMsg); // Rethrow with more context
     }
 }
 
