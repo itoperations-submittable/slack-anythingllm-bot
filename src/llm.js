@@ -176,9 +176,25 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText, mode = 
         return textResponse;
 
     } catch (error) {
-        const errorContext = error.response?.data || error.message;
-        const errorMsg = `LLM query failed for sphere ${sphere}${anythingLLMThreadSlug ? ", thread "+anythingLLMThreadSlug : ''}: ${errorContext}`; 
-        console.error(`[LLM Error - ${errorContext}]`, errorMsg);
+        // Enhanced Error Logging
+        let errorDetails = error.message;
+        if (error.response) {
+            // The request was made and the server responded with a status code
+            // that falls out of the range of 2xx
+            console.error(`[LLM Error Data - ${error.response.status}]:`, error.response.data);
+            errorDetails = `Status ${error.response.status}: ${JSON.stringify(error.response.data)}`;
+        } else if (error.request) {
+            // The request was made but no response was received
+            console.error('[LLM Error Request]:', error.request);
+            errorDetails = 'No response received from LLM server.';
+        } else {
+            // Something happened in setting up the request that triggered an Error
+            console.error('[LLM Error Message]:', error.message);
+        }
+        console.error('[LLM Error Config]:', error.config); // Log request config
+
+        const errorMsg = `LLM query failed for sphere ${sphere}${anythingLLMThreadSlug ? ", thread "+anythingLLMThreadSlug : ''}: ${errorDetails}`; 
+        console.error(`[LLM Error Full Context]`, errorMsg); // Log the final constructed message
         throw new Error(errorMsg); // Rethrow with more context
     }
 }
