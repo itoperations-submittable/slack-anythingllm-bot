@@ -17,6 +17,7 @@ export const port = process.env.PORT || 3000;
 export const redisUrl = process.env.REDIS_URL || null;
 export const databaseUrl = process.env.DATABASE_URL || null;
 export const githubToken = process.env.GITHUB_TOKEN || null; // Optional: Used for GitHub features (release check)
+export const githubWorkspaceSlug = process.env.GITHUB_WORKSPACE_SLUG || null;
 
 // --- Bot Behavior Configuration ---
 export const MAX_SLACK_BLOCK_TEXT_LENGTH = 2950; // Slightly less than 3000 limit for safety
@@ -46,6 +47,7 @@ export function validateConfig() {
     if (!botUserId) console.error("❌ SLACK_BOT_USER_ID is not set!");
     if (!anythingLLMBaseUrl) console.error("❌ LLM_API_BASE_URL is not set!");
     if (!anythingLLMApiKey) console.error("❌ LLM_API_KEY is not set!");
+    if (!githubWorkspaceSlug) console.error("❌ GITHUB_WORKSPACE_SLUG is not set!");
 
     if (!redisUrl) console.warn("⚠️ REDIS_URL not set. Duplicate detection and history reset features disabled.");
     if (!databaseUrl) console.warn("⚠️ DATABASE_URL not set. Feedback storage disabled (will log to console).");

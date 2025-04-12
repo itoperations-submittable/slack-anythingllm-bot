@@ -11,6 +11,7 @@ import {
     GITHUB_OWNER,
     githubToken // <-- Add import for githubToken
 } from './config.js';
+import fetch from 'node-fetch';
 
 // --- Event Deduplication ---
 
@@ -646,5 +647,75 @@ export async function getGithubIssueDetails(issueNumber) {
     } catch (error) {
         console.error(`[GitHub Utils] Error fetching details for ${owner}/${repo}#${issueNumber}:`, error);
         return null;
+    }
+}
+
+/**
+ * Calls the GitHub API based on details provided by the LLM.
+ * @param {object} apiDetails - Object containing endpoint, method, parameters, headers.
+ * @returns {Promise<object>} - The JSON response from the GitHub API.
+ */
+export async function callGithubApi(apiDetails) {
+    const { endpoint, method = 'GET', parameters = {}, headers = {} } = apiDetails;
+
+    if (!endpoint) {
+        throw new Error('GitHub API endpoint is missing in the details.');
+    }
+
+    const url = new URL(endpoint);
+
+    // Prepare headers
+    const requestHeaders = {
+        'Accept': 'application/vnd.github.v3+json', // Standard GitHub API header
+        'Authorization': `token ${githubToken}`,
+        'Content-Type': 'application/json',
+        ...headers // Allow overriding or adding headers from LLM response
+    };
+
+    // Prepare options for fetch
+    const options = {
+        method: method.toUpperCase(),
+        headers: requestHeaders,
+    };
+
+    // Handle parameters based on method
+    if (method.toUpperCase() === 'GET' || method.toUpperCase() === 'HEAD') {
+        // Append parameters to URL query string
+        Object.keys(parameters).forEach(key => url.searchParams.append(key, parameters[key]));
+    } else {
+        // Add parameters to request body for POST, PUT, PATCH, DELETE etc.
+        options.body = JSON.stringify(parameters);
+    }
+
+    console.log(`[GitHub API Call] Making request: ${options.method} ${url.toString()}`);
+    console.log(`[GitHub API Call] Headers:`, requestHeaders);
+    if (options.body) {
+        console.log(`[GitHub API Call] Body:`, options.body);
+    }
+
+    try {
+        const response = await fetch(url.toString(), options);
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            console.error(`[GitHub API Call] Error: ${response.status} ${response.statusText}`, errorBody);
+            throw new Error(`GitHub API request failed with status ${response.status}: ${errorBody}`);
+        }
+
+        // Check if response is JSON before parsing
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            const jsonResponse = await response.json();
+            console.log('[GitHub API Call] Success. Received JSON response.');
+            return jsonResponse;
+        } else {
+            // Handle non-JSON responses (e.g., 204 No Content)
+            console.log(`[GitHub API Call] Success. Received non-JSON response (Status: ${response.status}).`);
+            return { status: response.status, statusText: response.statusText }; // Return status info
+        }
+
+    } catch (error) {
+        console.error('[GitHub API Call] Network or fetch error:', error);
+        throw new Error(`Failed to call GitHub API: ${error.message}`);
     }
 }

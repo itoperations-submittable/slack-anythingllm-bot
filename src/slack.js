@@ -15,9 +15,11 @@ import {
     databaseUrl,
     redisUrl,
     githubToken,
-    MIN_SUBSTANTIVE_RESPONSE_LENGTH
+    MIN_SUBSTANTIVE_RESPONSE_LENGTH,
+    githubWorkspaceSlug,
+    logToLogSnag
 } from './config.js';
-import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails } from './utils.js';
+import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails, callGithubApi } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
 import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 import { Octokit } from '@octokit/rest';
@@ -379,6 +381,69 @@ async function handleSlackMessageEventInternal(event) {
             return; // <<< HANDLED (ERROR) RETURN
         }
     } 
+
+    // --- GitHub API Command ---
+    const isGithubCommand = cleanedQuery.toLowerCase().startsWith('github') || cleanedQuery.includes('#github');
+    if (isGithubCommand && githubWorkspaceSlug) {
+        console.log(`[GitHub API] Trigger detected for text: \"${cleanedQuery}\"`);
+        await logToLogSnag('GitHub API Trigger', 'Detected GitHub API command.', { user, channel, text: cleanedQuery });
+
+        const githubQuery = cleanedQuery.replace(/^github/i, '').replace(/#github/g, '').trim();
+        console.log(`[GitHub API] Querying GitHub workspace with: \"${githubQuery}\"`);
+
+        try {
+            const llmResponse = await queryLlm(githubWorkspaceSlug, null, githubQuery, 'query', []); // Use 'query' mode, no history
+            console.log('[GitHub API] Raw LLM Response:', JSON.stringify(llmResponse, null, 2));
+
+            if (!llmResponse || !llmResponse.textResponse) {
+                throw new Error('Received empty or invalid response from GitHub workspace LLM.');
+            }
+
+            let apiDetails;
+            try {
+                apiDetails = JSON.parse(llmResponse.textResponse);
+            } catch (parseError) {
+                console.error('[GitHub API] Failed to parse LLM response as JSON:', parseError);
+                await slack.chat.postMessage({
+                    channel: channel,
+                    thread_ts: thread_ts || ts, // Use event.ts if thread_ts is null
+                    text: `⚠️ Sorry, I couldn't understand the API instructions from the GitHub knowledge base. The response wasn't valid JSON.\\n\\nRaw response: \`\`\`${llmResponse.textResponse}\`\`\``
+                });
+                return;
+            }
+
+            // Call the GitHub API
+            try {
+                console.log("[GitHub API] Calling GitHub API with details:", apiDetails);
+                const githubResponse = await callGithubApi(apiDetails);
+                console.log("[GitHub API] Received response from GitHub.");
+
+                // Post the result back to Slack (as JSON for now)
+                await slack.chat.postMessage({
+                    channel: channel,
+                    thread_ts: thread_ts || ts,
+                    text: `Here is the response from the GitHub API:\n\`\`\`json\n${JSON.stringify(githubResponse, null, 2)}\n\`\`\``
+                });
+
+            } catch (apiError) {
+                console.error('[GitHub API] Error calling GitHub API:', apiError);
+                await slack.chat.postMessage({
+                    channel: channel,
+                    thread_ts: thread_ts || ts,
+                    text: `Sorry, I encountered an error while calling the GitHub API: ${apiError.message}`
+                });
+            }
+
+        } catch (llmError) {
+            console.error('[GitHub API] Error querying GitHub workspace LLM:', llmError);
+            await slack.chat.postMessage({
+                channel: channel,
+                thread_ts: thread_ts || ts, // Use event.ts if thread_ts is null
+                text: `Sorry, I encountered an error while trying to figure out the GitHub API call: ${llmError.message}`
+            });
+        }
+        return; // Stop processing after handling GitHub command
+    }
 
     // If neither command was handled and returned, proceed to main logic
     console.log("[Slack Handler] No direct answer command detected, proceeding to main LLM.");
