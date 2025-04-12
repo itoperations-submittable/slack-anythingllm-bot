@@ -478,14 +478,13 @@ async function handleSlackMessageEventInternal(event) {
                 // Wrap Slack posting logic in its own try...catch
                 try {
                     console.log("[GitHub API] Preparing final message for Slack.");
-                    // Consider that markdownToRichTextBlock itself might fail
                     const responseBlock = markdownToRichTextBlock(finalResponseText);
             
                     if (responseBlock) {
                         await slack.chat.postMessage({
                             channel: channel,
                             thread_ts: replyTarget,
-                            text: `GitHub Response: ${finalResponseText.substring(0, 200)}...`, // Descriptive fallback for notifications
+                            text: finalResponseText.substring(0, 200), // Use start of text as fallback
                             blocks: [responseBlock]
                         });
                         console.log("[GitHub API] Posted final response block to Slack.");
@@ -495,10 +494,23 @@ async function handleSlackMessageEventInternal(event) {
                         await slack.chat.postMessage({
                             channel: channel,
                             thread_ts: replyTarget,
-                            text: finalResponseText // Send full text
+                            text: finalResponseText
                         });
                         console.log("[GitHub API] Posted final response as plain text to Slack.");
                     } // End if (responseBlock)
+
+                    // --- Cleanup Thinking Message --- START
+                    try {
+                        const tsToDelete = await thinkingMessagePromise; // Ensure promise is resolved
+                        if (tsToDelete) {
+                            console.log(`[GitHub API] Deleting thinking message (ts: ${tsToDelete}).`);
+                            await slack.chat.delete({ channel: channel, ts: tsToDelete });
+                        }
+                    } catch(deleteError) {
+                        console.warn("[GitHub API] Failed to delete thinking message:", deleteError.data?.error || deleteError.message);
+                    }
+                    // --- Cleanup Thinking Message --- END
+
                 } catch (slackPostError) {
                     // Catch errors specifically from posting to Slack
                     console.error('[GitHub API] Error posting successful response to Slack:', slackPostError);
