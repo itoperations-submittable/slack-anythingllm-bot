@@ -124,13 +124,8 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText, mode = 
 
     console.log(`[LLM Service/queryLlm] Using endpoint: ${endpointUrl}`);
 
-    // Add instruction to not include context references in the response
-    // Apply this carefully - maybe only needed for thread chats?
-    // For now, applying to all.
-    const enhancedInputText = `${inputText}\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations.`;
-
     const requestBody = {
-        message: enhancedInputText,
+        message: inputText, // Use original inputText
         mode: mode, // Use the provided mode ('chat' or 'query')
         // attachments: attachments // Add attachments if needed later
     };

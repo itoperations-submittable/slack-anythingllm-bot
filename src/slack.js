@@ -605,7 +605,14 @@ async function handleSlackMessageEventInternal(event) {
         }
 
         // 8. Construct LLM Input (Just the query)
-        const llmInputText = cleanedQuery;
+        let llmInputText = cleanedQuery; // Start with the base query
+        
+        // --- Add instruction for non-GitHub queries --- START
+        console.log("[Slack Handler] This is NOT a GitHub command, adding LLM instructions.");
+        const instruction = '\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations.';
+        llmInputText += instruction;
+        // --- Add instruction for non-GitHub queries --- END
+        
         console.log(`[Slack Handler] Sending query to AnythingLLM Thread ${workspaceSlugForThread}:${anythingLLMThreadSlug}...`);
 
         // 9. Query LLM using thread endpoint
