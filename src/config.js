@@ -8,6 +8,10 @@ export const botToken = process.env.SLACK_BOT_TOKEN;
 export const appToken = process.env.SLACK_APP_TOKEN;
 export const botUserId = process.env.SLACK_BOT_USER_ID; // Bot's own User ID
 export const developerId = process.env.DEVELOPER_ID; // Optional: Restrict usage
+export const userWorkspaceMapping = JSON.parse(process.env.SLACK_USER_WORKSPACE_MAPPING || '{}');
+
+// Added enableUserWorkspaces
+export const enableUserWorkspaces = process.env.ENABLE_USER_WORKSPACES === 'true';
 
 // --- AnythingLLM Configuration ---
 export const anythingLLMBaseUrl = process.env.LLM_API_BASE_URL;
@@ -51,6 +55,10 @@ export function validateConfig() {
     if (!anythingLLMApiKey) console.error("❌ LLM_API_KEY is not set!");
     if (!githubWorkspaceSlug) console.error("❌ GITHUB_WORKSPACE_SLUG is not set!");
 
+    // Optional checks
+    if (enableUserWorkspaces && Object.keys(userWorkspaceMapping).length === 0) {
+        console.warn("⚠️ ENABLE_USER_WORKSPACES is true, but SLACK_USER_WORKSPACE_MAPPING is empty or invalid JSON.");
+    }
     if (!redisUrl) console.warn("⚠️ REDIS_URL not set. Duplicate detection and history reset features disabled.");
     if (!databaseUrl) console.warn("⚠️ DATABASE_URL not set. Feedback storage disabled (will log to console).");
     if (!githubToken) console.warn("⚠️ GITHUB_TOKEN not set. GitHub features (release check) disabled.");
