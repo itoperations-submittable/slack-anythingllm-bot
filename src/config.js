@@ -13,6 +13,9 @@ export const userWorkspaceMapping = JSON.parse(process.env.SLACK_USER_WORKSPACE_
 // Added enableUserWorkspaces
 export const enableUserWorkspaces = process.env.ENABLE_USER_WORKSPACES === 'true';
 
+// Added fallbackWorkspace
+export const fallbackWorkspace = process.env.FALLBACK_WORKSPACE_SLUG || null;
+
 // --- AnythingLLM Configuration ---
 export const anythingLLMBaseUrl = process.env.LLM_API_BASE_URL;
 export const anythingLLMApiKey = process.env.LLM_API_KEY;
@@ -54,6 +57,9 @@ export function validateConfig() {
     if (!anythingLLMBaseUrl) console.error("❌ LLM_API_BASE_URL is not set!");
     if (!anythingLLMApiKey) console.error("❌ LLM_API_KEY is not set!");
     if (!githubWorkspaceSlug) console.error("❌ GITHUB_WORKSPACE_SLUG is not set!");
+    if (!fallbackWorkspace && !enableUserWorkspaces && Object.keys(userWorkspaceMapping).length === 0) {
+        console.error("❌ No workspace configuration found! Set FALLBACK_WORKSPACE_SLUG or configure WORKSPACE_MAPPING or SLACK_USER_WORKSPACE_MAPPING.");
+    }
 
     // Optional checks
     if (enableUserWorkspaces && Object.keys(userWorkspaceMapping).length === 0) {
