@@ -3,8 +3,9 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // --- Slack Configuration ---
-export const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
-export const slackToken = process.env.SLACK_BOT_TOKEN;
+export const signingSecret = process.env.SLACK_SIGNING_SECRET;
+export const botToken = process.env.SLACK_BOT_TOKEN;
+export const appToken = process.env.SLACK_APP_TOKEN;
 export const botUserId = process.env.SLACK_BOT_USER_ID; // Bot's own User ID
 export const developerId = process.env.DEVELOPER_ID; // Optional: Restrict usage
 
@@ -42,8 +43,9 @@ export const THREAD_WORKSPACE_PREFIX = 'thread_workspace:'; // Key: thread_works
 // --- Validation ---
 export function validateConfig() {
     console.log("[Config] Validating configuration...");
-    if (!slackSigningSecret) console.error("❌ SLACK_SIGNING_SECRET is not set!");
-    if (!slackToken) console.error("❌ SLACK_BOT_TOKEN is not set!");
+    if (!signingSecret) console.error("❌ SLACK_SIGNING_SECRET is not set!");
+    if (!botToken) console.error("❌ SLACK_BOT_TOKEN is not set!");
+    if (!appToken) console.error("❌ SLACK_APP_TOKEN is not set!");
     if (!botUserId) console.error("❌ SLACK_BOT_USER_ID is not set!");
     if (!anythingLLMBaseUrl) console.error("❌ LLM_API_BASE_URL is not set!");
     if (!anythingLLMApiKey) console.error("❌ LLM_API_KEY is not set!");
