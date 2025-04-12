@@ -387,22 +387,29 @@ async function handleSlackMessageEventInternal(event) {
         console.log(`[GitHub API] Querying GitHub workspace with: \"${githubQuery}\"`);
 
         try {
-            const llmResponse = await queryLlm(githubWorkspaceSlug, null, githubQuery, 'query', []); // Use 'query' mode, no history
+            // Changed mode from 'query' to 'chat'
+            const llmResponse = await queryLlm(githubWorkspaceSlug, null, githubQuery, 'chat', []); 
             console.log('[GitHub API] Raw LLM Response:', JSON.stringify(llmResponse, null, 2));
 
-            if (!llmResponse || !llmResponse.textResponse) {
-                throw new Error('Received empty or invalid response from GitHub workspace LLM.');
+            if (!llmResponse) { // Check if llmResponse itself is null/undefined
+                throw new Error('Received null or invalid response from GitHub workspace LLM.');
             }
+
+            // Ensure the response is treated as text, even if null initially
+            const responseText = llmResponse || ''; 
 
             let apiDetails;
             try {
-                apiDetails = JSON.parse(llmResponse.textResponse);
+                // Attempt to parse, handle empty string gracefully
+                if (responseText.trim() === '') throw new Error('LLM response text was empty.'); 
+                apiDetails = JSON.parse(responseText);
             } catch (parseError) {
                 console.error('[GitHub API] Failed to parse LLM response as JSON:', parseError);
                 await slack.chat.postMessage({
                     channel: channel,
                     thread_ts: replyTarget,
-                    text: `⚠️ Sorry, I couldn't understand the API instructions from the GitHub knowledge base. The response wasn't valid JSON.\\n\\nRaw response: \`\`\`${llmResponse.textResponse}\`\`\``
+                    // Use responseText in the error message
+                    text: `⚠️ Sorry, I couldn't understand the API instructions from the GitHub knowledge base. The response wasn't valid JSON.\n\nRaw response: \`\`\`${responseText}\`\`\`` 
                 });
                 return;
             }
