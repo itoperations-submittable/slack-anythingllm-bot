@@ -29,6 +29,7 @@ export const redisUrl = process.env.REDIS_URL || null;
 export const databaseUrl = process.env.DATABASE_URL || null;
 export const githubToken = process.env.GITHUB_TOKEN || null; // Optional: Used for GitHub features (release check)
 export const githubWorkspaceSlug = process.env.GITHUB_WORKSPACE_SLUG || null;
+export const formatterWorkspaceSlug = process.env.FORMATTER_WORKSPACE_SLUG || null; // Added formatter slug
 
 // --- Bot Behavior Configuration ---
 export const MAX_SLACK_BLOCK_TEXT_LENGTH = 2950; // Slightly less than 3000 limit for safety
@@ -74,6 +75,7 @@ export function validateConfig() {
     if (!redisUrl) console.warn("⚠️ REDIS_URL not set. Duplicate detection and history reset features disabled.");
     if (!databaseUrl) console.warn("⚠️ DATABASE_URL not set. Feedback storage disabled (will log to console).");
     if (!githubToken) console.warn("⚠️ GITHUB_TOKEN not set. GitHub features (release check) disabled.");
+    if (!formatterWorkspaceSlug) console.warn("⚠️ FORMATTER_WORKSPACE_SLUG not set. GitHub responses will be sent as raw JSON."); // Added warning
 
     console.log("[Config] Basic validation complete.");
 }

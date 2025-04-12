@@ -13,6 +13,7 @@ import {
     redisUrl,
     githubToken,
     githubWorkspaceSlug,
+    formatterWorkspaceSlug,
     MIN_SUBSTANTIVE_RESPONSE_LENGTH
 } from './config.js';
 import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails, callGithubApi } from './utils.js';
@@ -431,26 +432,109 @@ async function handleSlackMessageEventInternal(event) {
             }
 
             // Call the GitHub API
-            try {
+            try { // Outer try for GitHub API call AND subsequent processing
                 console.log("[GitHub API] Calling GitHub API with details:", apiDetails);
                 const githubResponse = await callGithubApi(apiDetails);
                 console.log("[GitHub API] Received response from GitHub.");
-
-                // Post the result back to Slack (as JSON for now)
-                await slack.chat.postMessage({
-                    channel: channel,
-                    thread_ts: replyTarget,
-                    text: `Here is the response from the GitHub API:\n\`\`\`json\n${JSON.stringify(githubResponse, null, 2)}\n\`\`\``
-                });
-
-            } catch (apiError) {
+            
+                // --- Format the response --- START
+                let finalResponseText = ''; // Initialize final response text
+                const rawJsonString = JSON.stringify(githubResponse, null, 2); // Stringify once for potential reuse
+            
+                if (formatterWorkspaceSlug) {
+                    // Try to format using the formatter workspace
+                    console.log(`[GitHub API] Formatting response using workspace: ${formatterWorkspaceSlug}`);
+                    const formatPrompt = rawJsonString; // Send the stringified JSON
+                    console.log(`[GitHub API] Sending stringified JSON to formatter (length: ${formatPrompt.length})`);
+            
+                    try { // Inner try for Formatter LLM call
+                        const formattedLLMResponse = await queryLlm(formatterWorkspaceSlug, null, formatPrompt, 'chat', []);
+                        // Handle null/undefined/empty/whitespace responses robustly
+                        const trimmedResponse = formattedLLMResponse ? formattedLLMResponse.trim() : '';
+            
+                        if (trimmedResponse.length > 0) {
+                            finalResponseText = trimmedResponse;
+                            console.log("[GitHub API] Successfully formatted response.");
+                        } else {
+                            console.warn("[GitHub API] Formatter LLM returned an empty or null response. Falling back to raw JSON.");
+                            // Use template literal for fallback
+                            finalResponseText = `(Formatter failed or returned empty, showing raw data):\n\`\`\`json\n${rawJsonString}\n\`\`\``;
+                        }
+                    } catch (formatError) { // Catch for Formatter LLM call
+                        console.error('[GitHub API] Error calling formatter LLM:', formatError);
+                        // Use template literal for error message
+                        finalResponseText = `(Error during formatting: ${formatError.message})\n\nRaw data:\n\`\`\`json\n${rawJsonString}\n\`\`\``;
+                    } // End catch for Formatter LLM call
+            
+                } else {
+                    // No formatter configured, use raw JSON
+                    console.log("[GitHub API] No formatter workspace configured. Sending raw JSON.");
+                    // Use template literal for raw response message
+                    finalResponseText = `Here is the raw response from the GitHub API:\n\`\`\`json\n${rawJsonString}\n\`\`\``;
+                }
+                // --- Format the response --- END
+            
+                // --- Post the final (formatted or raw) response back to Slack --- START
+                // Wrap Slack posting logic in its own try...catch
+                try {
+                    console.log("[GitHub API] Preparing final message for Slack.");
+                    // Consider that markdownToRichTextBlock itself might fail
+                    const responseBlock = markdownToRichTextBlock(finalResponseText);
+            
+                    if (responseBlock) {
+                        await slack.chat.postMessage({
+                            channel: channel,
+                            thread_ts: replyTarget,
+                            text: `GitHub Response: ${finalResponseText.substring(0, 200)}...`, // Descriptive fallback for notifications
+                            blocks: [responseBlock]
+                        });
+                        console.log("[GitHub API] Posted final response block to Slack.");
+                    } else {
+                        // Fallback to plain text if block generation fails
+                        console.warn("[GitHub API] Failed to generate block for final response. Sending plain text.");
+                        await slack.chat.postMessage({
+                            channel: channel,
+                            thread_ts: replyTarget,
+                            text: finalResponseText // Send full text
+                        });
+                        console.log("[GitHub API] Posted final response as plain text to Slack.");
+                    } // End if (responseBlock)
+                } catch (slackPostError) {
+                    // Catch errors specifically from posting to Slack
+                    console.error('[GitHub API] Error posting successful response to Slack:', slackPostError);
+                    // Log the error. You might optionally try to send a very basic error
+                    // message back to Slack here, but be aware that might also fail.
+                    // Example:
+                    /*
+                    try {
+                        await slack.chat.postMessage({
+                            channel: channel,
+                            thread_ts: replyTarget,
+                            text: `[GitHub API] Got the data, but failed to post the full response back here due to an error: ${slackPostError.message}`
+                        });
+                    } catch (nestedSlackError) {
+                         console.error('[GitHub API] Failed even to post the Slack error message back:', nestedSlackError);
+                    }
+                    */
+                }
+                // --- Post the final response back to Slack --- END
+            
+            } catch (apiError) { // Catch errors specifically from the GitHub API call
                 console.error('[GitHub API] Error calling GitHub API:', apiError);
-                await slack.chat.postMessage({
-                    channel: channel,
-                    thread_ts: replyTarget,
-                    text: `Sorry, I encountered an error while calling the GitHub API: ${apiError.message}`
-                });
-            }
+            
+                // Attempt to report the API error back to Slack
+                // This *also* needs its own try-catch in case Slack is unreachable
+                try {
+                    await slack.chat.postMessage({
+                        channel: channel,
+                        thread_ts: replyTarget,
+                        text: `Sorry, I encountered an error while calling the GitHub API: ${apiError.message}`
+                    });
+                } catch (slackErrorWhileReportingApiError) {
+                    console.error('[GitHub API] CRITICAL: Failed to call GitHub API AND failed to report the error to Slack:', slackErrorWhileReportingApiError);
+                    console.error('[GitHub API] Original API Error was:', apiError); // Ensure original error is logged
+                }
+            } 
 
         } catch (llmError) {
             console.error('[GitHub API] Error querying GitHub workspace LLM:', llmError);
