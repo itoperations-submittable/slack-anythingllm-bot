@@ -15,7 +15,7 @@ import {
     githubWorkspaceSlug,
     MIN_SUBSTANTIVE_RESPONSE_LENGTH
 } from './config.js';
-import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails, callGithubApi, logToLogSnag } from './utils.js';
+import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails, callGithubApi } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
 import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 import { Octokit } from '@octokit/rest';
@@ -382,7 +382,6 @@ async function handleSlackMessageEventInternal(event) {
     const isGithubCommand = cleanedQuery.toLowerCase().startsWith('github') || cleanedQuery.includes('#github');
     if (isGithubCommand && githubWorkspaceSlug) {
         console.log(`[GitHub API] Trigger detected for text: \"${cleanedQuery}\"`);
-        await logToLogSnag('GitHub API Trigger', 'Detected GitHub API command.', { user, channel, text: cleanedQuery });
 
         const githubQuery = cleanedQuery.replace(/^github/i, '').replace(/#github/g, '').trim();
         console.log(`[GitHub API] Querying GitHub workspace with: \"${githubQuery}\"`);
