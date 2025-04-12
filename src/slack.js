@@ -453,11 +453,25 @@ async function handleSlackMessageEventInternal(event) {
                         const trimmedResponse = formattedLLMResponse ? formattedLLMResponse.trim() : '';
             
                         if (trimmedResponse.length > 0) {
-                            finalResponseText = trimmedResponse;
-                            console.log("[GitHub API] Successfully formatted response.");
+                            let rawFormatted = trimmedResponse;
+                            console.log("[GitHub API] Successfully received formatted response (before cleaning).");
+                            
+                            // --- Clean the FORMATTED response text: Remove markdown code fences --- START
+                            let cleanedFormattedResponse = rawFormatted;
+                            if (cleanedFormattedResponse.startsWith('```markdown')) {
+                                cleanedFormattedResponse = cleanedFormattedResponse.substring(11);
+                            } else if (cleanedFormattedResponse.startsWith('```')) { 
+                                cleanedFormattedResponse = cleanedFormattedResponse.substring(3);
+                            }
+                            if (cleanedFormattedResponse.endsWith('```')) {
+                                cleanedFormattedResponse = cleanedFormattedResponse.substring(0, cleanedFormattedResponse.length - 3);
+                            }
+                            finalResponseText = cleanedFormattedResponse.trim(); // Assign cleaned text
+                            console.log("[GitHub API] Cleaned formatted response before sending to Slack.");
+                            // --- Clean the FORMATTED response text: Remove markdown code fences --- END
                         } else {
                             console.warn("[GitHub API] Formatter LLM returned an empty or null response. Falling back to raw JSON.");
-                            // Use template literal for fallback
+                            // Use standard string literal for fallback
                             finalResponseText = `(Formatter failed or returned empty, showing raw data):\n\`\`\`json\n${rawJsonString}\n\`\`\``;
                         }
                     } catch (formatError) { // Catch for Formatter LLM call
