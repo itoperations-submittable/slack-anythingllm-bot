@@ -14,7 +14,8 @@ import {
     githubToken,
     githubWorkspaceSlug,
     formatterWorkspaceSlug,
-    MIN_SUBSTANTIVE_RESPONSE_LENGTH
+    MIN_SUBSTANTIVE_RESPONSE_LENGTH,
+    MAX_SLACK_BLOCK_TEXT_LENGTH
 } from './config.js';
 import { isDuplicateRedis, splitMessageIntoChunks, formatSlackMessage, extractTextAndCode, getSlackFiletype, markdownToRichTextBlock, getGithubIssueDetails, callGithubApi } from './utils.js';
 import { redisClient, isRedisReady, dbPool, getAnythingLLMThreadMapping, storeAnythingLLMThreadMapping } from './services.js';
