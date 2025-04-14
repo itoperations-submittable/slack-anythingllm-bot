@@ -1098,20 +1098,20 @@ async function handleExportCommand(channel, thread_ts, user) {
             statusText += `\n:warning: Note: Could not add to AnythingLLM (${llmError})`;
         }
 
-            // Update status message
-            await slack.chat.update({
-                channel: channel,
-                ts: statusMsg.ts,
-                text: statusText
-            });
+        // Update status message
+        await slack.chat.update({
+            channel: channel,
+            ts: statusMsg.ts,
+            text: statusText
+        });
 
-        } catch (error) {
-            console.error('Error handling export command:', error);
-            await slack.chat.postMessage({
-                channel: channel,
-                thread_ts: thread_ts,
-                text: ':x: Sorry, there was an error exporting the conversation. Please try again.'
-            });
+    } catch (error) {
+        console.error('Error handling export command:', error);
+        await slack.chat.postMessage({
+            channel: channel,
+            thread_ts: thread_ts,
+            text: ':x: Sorry, there was an error exporting the conversation. Please try again.'
+        });
         }
     }
 
@@ -1149,27 +1149,27 @@ async function handleInteraction(req, res) {
                 let responseSphere = null;
                 let encodedFallbackText = null; // <-- New variable
 
-                    if (blockId?.startsWith('feedback_')) {
-                        const parts = blockId.substring(9).split('_'); // Format: origTS_sphere_encodedText
-                        originalQuestionTs = parts[0];
-                        if (parts.length > 1) { responseSphere = parts[1]; }
-                        // The rest is the encoded text (might contain underscores)
-                        if (parts.length > 2) { encodedFallbackText = parts.slice(2).join('_'); }
-                    }
-                    console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}, EncodedText? ${!!encodedFallbackText}`);
+                if (blockId?.startsWith('feedback_')) {
+                    const parts = blockId.substring(9).split('_'); // Format: origTS_sphere_encodedText
+                    originalQuestionTs = parts[0];
+                    if (parts.length > 1) { responseSphere = parts[1]; }
+                    // The rest is the encoded text (might contain underscores)
+                    if (parts.length > 2) { encodedFallbackText = parts.slice(2).join('_'); }
+                }
+                console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}, EncodedText? ${!!encodedFallbackText}`);
 
-                    // Fetch original *user* question text
-                    let originalQuestionText = null;
-                    if (originalQuestionTs && channelId) {
-                        try {
-                            const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
-                            if (historyResult.ok && historyResult.messages?.[0]?.text) {
-                                originalQuestionText = historyResult.messages[0].text;
-                            } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
-                        } catch (historyError) {
-                            console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
-                        }
+                // Fetch original *user* question text
+                let originalQuestionText = null;
+                if (originalQuestionTs && channelId) {
+                    try {
+                        const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
+                        if (historyResult.ok && historyResult.messages?.[0]?.text) {
+                            originalQuestionText = historyResult.messages[0].text;
+                        } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
+                    } catch (historyError) {
+                        console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
                     }
+                }
 
                     // --- Start NEW logic: Decode text from block_id ---
                     let actualBotMessageText = null;
