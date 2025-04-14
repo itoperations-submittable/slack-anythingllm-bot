@@ -1027,8 +1027,8 @@ async function handleSlackEvent(event, body) {
 
     const eventId = body?.event_id || `no-id:${event.event_ts}`;
     if (await isDuplicateRedis(eventId)) {
-         console.log(`[Slack Event Wrapper] Duplicate event skipped: ${eventId}`);
-         return;
+        console.log(`[Slack Event Wrapper] Duplicate event skipped: ${eventId}`);
+        return;
     }
 
     // Check for #saveToConversations hashtag
@@ -1038,34 +1038,34 @@ async function handleSlackEvent(event, body) {
         return;
     }
 
-    const { subtype, user: messageUserId, channel: channelId, text = '' } = event;
+        const { subtype, user: messageUserId, channel: channelId, text = '' } = event;
 
-    // Filter out unwanted events
-    if ( subtype === 'bot_message' || subtype === 'message_deleted' || subtype === 'message_changed' ||
-         subtype === 'channel_join' || subtype === 'channel_leave' || subtype === 'thread_broadcast' ||
-         !messageUserId || !text || messageUserId === botUserId ) {
-        // console.log(\"[Slack Event Wrapper] Ignoring event subtype:\", subtype || \'missing/invalid user/text\");
-        return;
+        // Filter out unwanted events
+        if ( subtype === 'bot_message' || subtype === 'message_deleted' || subtype === 'message_changed' ||
+            subtype === 'channel_join' || subtype === 'channel_leave' || subtype === 'thread_broadcast' ||
+            !messageUserId || !text || messageUserId === botUserId ) {
+            // console.log(\"[Slack Event Wrapper] Ignoring event subtype:\", subtype || \'missing/invalid user/text\");
+            return;
+        }
+
+        const isDM = channelId.startsWith('D');
+        const mentionString = `<@${botUserId}>`;
+        const wasMentioned = text.includes(mentionString);
+
+        // *** ADDED: Detailed logging before relevance check ***
+        console.log(`[Slack Event Wrapper DEBUG] Event ID: ${eventId}, Type: ${event.type}, Subtype: ${subtype}, User: ${messageUserId}, Channel: ${channelId}, IsDM: ${isDM}, MentionString: "${mentionString}", WasMentioned: ${wasMentioned}, Text: "${text.substring(0, 100)}..."`);
+
+        // Check if it's a relevant event (DM or Mention)
+        if (isDM || wasMentioned) {
+            console.log(`[Slack Event Wrapper] Processing relevant event ID: ${eventId}`);
+            // Run the internal handler asynchronously, don\'t block the event ACK
+            handleSlackMessageEventInternal(event).catch(err => {
+                console.error("[Slack Event Wrapper] Unhandled Handler Error, Event ID:", eventId, err);
+            });
+        } else {
+            return;
+        }
     }
-
-    const isDM = channelId.startsWith('D');
-    const mentionString = `<@${botUserId}>`;
-    const wasMentioned = text.includes(mentionString);
-
-    // *** ADDED: Detailed logging before relevance check ***
-    console.log(`[Slack Event Wrapper DEBUG] Event ID: ${eventId}, Type: ${event.type}, Subtype: ${subtype}, User: ${messageUserId}, Channel: ${channelId}, IsDM: ${isDM}, MentionString: "${mentionString}", WasMentioned: ${wasMentioned}, Text: "${text.substring(0, 100)}..."`);
-
-    // Check if it's a relevant event (DM or Mention)
-    if (isDM || wasMentioned) {
-        console.log(`[Slack Event Wrapper] Processing relevant event ID: ${eventId}`);
-        // Run the internal handler asynchronously, don\'t block the event ACK
-        handleSlackMessageEventInternal(event).catch(err => {
-            console.error("[Slack Event Wrapper] Unhandled Handler Error, Event ID:", eventId, err);
-        });
-    } else {
-        return;
-    }
-}
 
 // --- Export Command Handler ---
 async function handleExportCommand(channel, thread_ts, user) {
@@ -1079,7 +1079,7 @@ async function handleExportCommand(channel, thread_ts, user) {
 
         // Export the conversation and upload to AnythingLLM
         const { content, metadata, llmResponse, llmError } = await exportConversationToMarkdown(channel, thread_ts, true);
-        
+            
         // Upload as a file in Slack using uploadV2
         await slack.files.uploadV2({
             channel_id: channel,
@@ -1098,22 +1098,22 @@ async function handleExportCommand(channel, thread_ts, user) {
             statusText += `\n:warning: Note: Could not add to AnythingLLM (${llmError})`;
         }
 
-        // Update status message
-        await slack.chat.update({
-            channel: channel,
-            ts: statusMsg.ts,
-            text: statusText
-        });
+            // Update status message
+            await slack.chat.update({
+                channel: channel,
+                ts: statusMsg.ts,
+                text: statusText
+            });
 
-    } catch (error) {
-        console.error('Error handling export command:', error);
-        await slack.chat.postMessage({
-            channel: channel,
-            thread_ts: thread_ts,
-            text: ':x: Sorry, there was an error exporting the conversation. Please try again.'
-        });
+        } catch (error) {
+            console.error('Error handling export command:', error);
+            await slack.chat.postMessage({
+                channel: channel,
+                thread_ts: thread_ts,
+                text: ':x: Sorry, there was an error exporting the conversation. Please try again.'
+            });
+        }
     }
-}
 
 // --- Interaction Handler --- (Handles button clicks etc.)
 async function handleInteraction(req, res) {
@@ -1149,104 +1149,105 @@ async function handleInteraction(req, res) {
                 let responseSphere = null;
                 let encodedFallbackText = null; // <-- New variable
 
-                if (blockId?.startsWith('feedback_')) {
-                    const parts = blockId.substring(9).split('_'); // Format: origTS_sphere_encodedText
-                    originalQuestionTs = parts[0];
-                    if (parts.length > 1) { responseSphere = parts[1]; }
-                    // The rest is the encoded text (might contain underscores)
-                    if (parts.length > 2) { encodedFallbackText = parts.slice(2).join('_'); }
-                }
-                console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}, EncodedText? ${!!encodedFallbackText}`);
+                    if (blockId?.startsWith('feedback_')) {
+                        const parts = blockId.substring(9).split('_'); // Format: origTS_sphere_encodedText
+                        originalQuestionTs = parts[0];
+                        if (parts.length > 1) { responseSphere = parts[1]; }
+                        // The rest is the encoded text (might contain underscores)
+                        if (parts.length > 2) { encodedFallbackText = parts.slice(2).join('_'); }
+                    }
+                    console.log(`[Interaction Handler] Feedback: User ${userId}, Val ${feedbackValue}, OrigTS ${originalQuestionTs}, Sphere ${responseSphere}, EncodedText? ${!!encodedFallbackText}`);
 
-                // Fetch original *user* question text
-                let originalQuestionText = null;
-                if (originalQuestionTs && channelId) {
-                     try {
-                         const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
-                         if (historyResult.ok && historyResult.messages?.[0]?.text) {
-                            originalQuestionText = historyResult.messages[0].text;
-                         } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
-                     } catch (historyError) {
-                         console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
-                     }
-                }
+                    // Fetch original *user* question text
+                    let originalQuestionText = null;
+                    if (originalQuestionTs && channelId) {
+                        try {
+                            const historyResult = await slack.conversations.history({ channel: channelId, latest: originalQuestionTs, oldest: originalQuestionTs, inclusive: true, limit: 1 });
+                            if (historyResult.ok && historyResult.messages?.[0]?.text) {
+                                originalQuestionText = historyResult.messages[0].text;
+                            } else { console.warn("[Interaction] Failed to fetch original message text or msg not found."); }
+                        } catch (historyError) {
+                            console.error('[Interaction] Error fetching original message text:', historyError.data?.error || historyError.message);
+                        }
+                    }
 
-                // --- Start NEW logic: Decode text from block_id ---
-                let actualBotMessageText = null;
-                if (encodedFallbackText) {
+                    // --- Start NEW logic: Decode text from block_id ---
+                    let actualBotMessageText = null;
+                    if (encodedFallbackText) {
+                        try {
+                            actualBotMessageText = decodeURIComponent(encodedFallbackText);
+                            console.log(`[Interaction Handler] Decoded bot message text from block_id: "${actualBotMessageText.substring(0, 50)}..."`);
+                        } catch (decodeError) {
+                            console.error("[Interaction Handler] Error decoding fallback text from block_id:", decodeError);
+                        }
+                    }
+                
+                    // Fallback if decoding failed or text wasn't in block_id
+                    if (!actualBotMessageText) {
+                        console.warn("[Interaction Handler] Could not get bot message text from block_id. Falling back.");
+                        actualBotMessageText = payload.message.text; // Fallback to "Feedback:"
+                    }
+                    // --- End NEW logic ---
+
+                    // Store feedback data
                     try {
-                        actualBotMessageText = decodeURIComponent(encodedFallbackText);
-                        console.log(`[Interaction Handler] Decoded bot message text from block_id: "${actualBotMessageText.substring(0, 50)}..."`);
-                    } catch (decodeError) {
-                        console.error("[Interaction Handler] Error decoding fallback text from block_id:", decodeError);
-                    }
-                }
-            
-                // Fallback if decoding failed or text wasn't in block_id
-                if (!actualBotMessageText) {
-                    console.warn("[Interaction Handler] Could not get bot message text from block_id. Falling back.");
-                    actualBotMessageText = payload.message.text; // Fallback to "Feedback:"
-                }
-                // --- End NEW logic ---
-
-                // Store feedback data
-                try {
-                    await storeFeedback({
-                        feedback_value: feedbackValue,
-                        user_id: userId,
-                        channel_id: channelId,
-                        bot_message_ts: messageTs, // Use button message TS again
-                        original_user_message_ts: originalQuestionTs || null,
-                        action_id: actionId,
-                        sphere_slug: responseSphere || null,
-                        bot_message_text: actualBotMessageText || null, // Use the decoded/fallback text
-                        original_user_message_text: originalQuestionText || null
-                    });
-                    console.log(`[Interaction Handler] Feedback stored: ${feedbackValue} from ${userId}`);
-                } catch (storeFeedbackError) {
-                    console.error(`[Interaction Handler] Error storing feedback:`, storeFeedbackError);
-                }
-
-                // Update UI (No change)
-                try {
-                    const originalBlocks = payload.message.blocks;
-                    if (originalBlocks && originalBlocks.length > 0) { // Check if blocks exist
-                         // Find the actions block to replace (safer than assuming index)
-                         const actionBlockIndex = originalBlocks.findIndex(block => block.type === 'actions');
-                         let updatedBlocks;
-
-                         if (actionBlockIndex !== -1) {
-                             // Replace the actions block with a context block
-                             updatedBlocks = [
-                                 ...originalBlocks.slice(0, actionBlockIndex),
-                                 { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
-                             ];
-                         } else {
-                             // If no actions block found (unexpected), just append context
-                             console.warn("[Interaction Handler] Could not find actions block to replace in feedback message.");
-                             updatedBlocks = [
-                                 ...originalBlocks,
-                                 { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
-                             ];
-                         }
-
-                        await slack.chat.update({
-                            channel: channelId,
-                            ts: messageTs,
-                            text: payload.message.text + "\n\n🙏 Thanks!",
-                            blocks: updatedBlocks
+                        await storeFeedback({
+                            feedback_value: feedbackValue,
+                            user_id: userId,
+                            channel_id: channelId,
+                            bot_message_ts: messageTs, // Use button message TS again
+                            original_user_message_ts: originalQuestionTs || null,
+                            action_id: actionId,
+                            sphere_slug: responseSphere || null,
+                            bot_message_text: actualBotMessageText || null, // Use the decoded/fallback text
+                            original_user_message_text: originalQuestionText || null
                         });
-                         console.log(`[Interaction Handler] Updated message ${messageTs} to reflect feedback.`);
-                    } else {
-                         console.warn("[Interaction Handler] Could not update feedback message - no blocks found.");
+                        console.log(`[Interaction Handler] Feedback stored: ${feedbackValue} from ${userId}`);
+                    } catch (storeFeedbackError) {
+                        console.error(`[Interaction Handler] Error storing feedback:`, storeFeedbackError);
                     }
-                } catch (updateError) {
-                    console.warn("Failed to update feedback message:", updateError.data?.error || updateError.message);
+
+                    // Update UI (No change)
+                    try {
+                        const originalBlocks = payload.message.blocks;
+                        if (originalBlocks && originalBlocks.length > 0) { // Check if blocks exist
+                            // Find the actions block to replace (safer than assuming index)
+                            const actionBlockIndex = originalBlocks.findIndex(block => block.type === 'actions');
+                            let updatedBlocks;
+
+                            if (actionBlockIndex !== -1) {
+                                // Replace the actions block with a context block
+                                updatedBlocks = [
+                                    ...originalBlocks.slice(0, actionBlockIndex),
+                                    { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
+                                ];
+                            } else {
+                                // If no actions block found (unexpected), just append context
+                                console.warn("[Interaction Handler] Could not find actions block to replace in feedback message.");
+                                updatedBlocks = [
+                                    ...originalBlocks,
+                                    { "type": "context", "elements": [ { "type": "mrkdwn", "text": `🙏 Thanks for the feedback! (_${feedbackValue === 'bad' ? '👎' : feedbackValue === 'ok' ? '👌' : '👍'}_)` } ] }
+                                ];
+                            }
+
+                            await slack.chat.update({
+                                channel: channelId,
+                                ts: messageTs,
+                                text: payload.message.text + "\n\n🙏 Thanks!",
+                                blocks: updatedBlocks
+                            });
+                            console.log(`[Interaction Handler] Updated message ${messageTs} to reflect feedback.`);
+                        } else {
+                            console.warn("[Interaction Handler] Could not update feedback message - no blocks found.");
+                        }
+                    } catch (updateError) {
+                        console.warn("Failed to update feedback message:", updateError.data?.error || updateError.message);
+                    }
                 }
             }
+        } catch (error) {
+            console.error("[Interaction Handling Error] An error occurred:", error);
         }
-    } catch (error) {
-        console.error("[Interaction Handling Error] An error occurred:", error);
     }
 }
 
