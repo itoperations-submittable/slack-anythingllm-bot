@@ -173,7 +173,7 @@ async function uploadToAnythingLLM(content, filename) {
             `${anythingLLMBaseUrl}/api/v1/workspace/all/chat`,
             {
                 message: requestMessage,
-                mode: 'query'
+                mode: 'chat'
             },
             {
                 headers: {
