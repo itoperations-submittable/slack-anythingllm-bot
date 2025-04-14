@@ -1,5 +1,6 @@
 import { WebClient } from '@slack/web-api';
 import { createEventAdapter } from '@slack/events-api';
+import { exportConversationToMarkdown } from './conversation-export.js';
 import {
     signingSecret,
     botToken,
@@ -808,6 +809,13 @@ export async function handleSlackEvent(event, body) {
          return;
     }
 
+    // Check for export command
+    if (event.type === 'message' && event.text?.toLowerCase().trim() === '/export') {
+        console.log('[Slack Event Wrapper] Export command detected');
+        await handleExportCommand(event.channel, event.thread_ts || event.ts, event.user);
+        return;
+    }
+
     const { subtype, user: messageUserId, channel: channelId, text = '' } = event;
 
     // Filter out unwanted events
@@ -834,6 +842,55 @@ export async function handleSlackEvent(event, body) {
         });
     } else {
         return;
+    }
+}
+
+// --- Export Command Handler ---
+async function handleExportCommand(channel, thread_ts, user) {
+    try {
+        // Send initial status message
+        const statusMsg = await slack.chat.postMessage({
+            channel: channel,
+            thread_ts: thread_ts,
+            text: ':hourglass: Exporting conversation...',
+        });
+
+        // Export the conversation and upload to AnythingLLM
+        const { content, metadata, llmResponse, llmError } = await exportConversationToMarkdown(channel, thread_ts, true);
+        
+        // Upload as a file in Slack
+        await slack.files.upload({
+            channels: channel,
+            thread_ts: thread_ts,
+            content: content,
+            filename: `conversation-${metadata.channelName}-${thread_ts}.md`,
+            filetype: 'markdown',
+            title: `Conversation Export - #${metadata.channelName}`,
+            initial_comment: 'Here\'s your conversation export! :file_folder:'
+        });
+
+        // Prepare status message based on AnythingLLM upload result
+        let statusText = ':white_check_mark: Conversation exported successfully!';
+        if (llmResponse?.success) {
+            statusText += '\n:brain: Added to AnythingLLM conversations workspace!';
+        } else if (llmError) {
+            statusText += `\n:warning: Note: Could not add to AnythingLLM (${llmError})`;
+        }
+
+        // Update status message
+        await slack.chat.update({
+            channel: channel,
+            ts: statusMsg.ts,
+            text: statusText
+        });
+
+    } catch (error) {
+        console.error('Error handling export command:', error);
+        await slack.chat.postMessage({
+            channel: channel,
+            thread_ts: thread_ts,
+            text: ':x: Sorry, there was an error exporting the conversation. Please try again.'
+        });
     }
 }
 
