@@ -164,7 +164,7 @@ async function uploadToAnythingLLM(content, filename) {
     // Get a title for the conversation using AnythingLLM
     console.log('[AnythingLLM] Getting title for conversation...');
     try {
-        const requestPrompt = 'Based on this conversation, suggest a clear and concise title (not less or more than 10 words) that captures its main topic. Only respond with the title, nothing else:';
+        const requestPrompt = 'Based on this conversation, suggest a clear and detailed long title (not less than 10 words) that captures its main topic. Only respond with the title, nothing else:';
         const requestMessage = `${requestPrompt}\n\n${content}`;
         console.log('[AnythingLLM] Title request prompt:', requestPrompt);
         console.log('[AnythingLLM] Content length:', content.length, 'characters');
@@ -186,33 +186,23 @@ async function uploadToAnythingLLM(content, filename) {
 
         console.log('[AnythingLLM] Chat response:', JSON.stringify(chatResponse.data, null, 2));
         
-        // Extract title from response, handling different possible response structures
-        let suggestedTitle = '';
-        if (chatResponse.data.message) {
-            suggestedTitle = chatResponse.data.message;
-        } else if (chatResponse.data.response) {
-            suggestedTitle = chatResponse.data.response;
-        } else if (chatResponse.data.content) {
-            suggestedTitle = chatResponse.data.content;
-        } else if (typeof chatResponse.data === 'string') {
-            suggestedTitle = chatResponse.data;
-        }
-
-        if (suggestedTitle) {
-            // Clean up the title: remove special chars and replace spaces with hyphens
-            suggestedTitle = suggestedTitle.trim()
-                .replace(/[^a-zA-Z0-9-_ ]/g, '')
-                .replace(/\s+/g, '-');
-            
-            console.log('[AnythingLLM] Suggested title:', suggestedTitle);
-
-            // Create filename with title and date
-            const currentDate = new Date().toISOString().split('T')[0];
-            filename = `${suggestedTitle}-${currentDate}.md`;
-            console.log('[AnythingLLM] Final filename:', filename);
-        } else {
+        // Get title from LLM response
+        const suggestedTitle = chatResponse.data.textResponse;
+        if (!suggestedTitle) {
             throw new Error('No title found in response');
         }
+
+        // Clean up the title: remove special chars and replace spaces with hyphens
+        suggestedTitle = suggestedTitle.trim()
+            .replace(/[^a-zA-Z0-9-_ ]/g, '')
+            .replace(/\s+/g, '-');
+        
+        console.log('[AnythingLLM] Suggested title:', suggestedTitle);
+
+        // Create filename with title and date
+        const currentDate = new Date().toISOString().split('T')[0];
+        filename = `${suggestedTitle}-${currentDate}.md`;
+        console.log('[AnythingLLM] Final filename:', filename);
     } catch (error) {
         console.error('[AnythingLLM] Error getting title:', error);
         // Fall back to default filename if title generation fails

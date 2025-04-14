@@ -152,23 +152,11 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText, mode = 
         // Log the raw response for debugging
         console.log("[LLM Service/queryLlm] Raw API Response:", JSON.stringify(llmResponse.data, null, 2));
 
-        // Extract text response - handle potential variations in structure
-        // Common fields are 'textResponse' or sometimes nested within 'choices'
-        let textResponse = llmResponse.data.textResponse || null;
-
-        // Add checks for other potential structures if needed based on API behavior
-        // if (!textResponse && llmResponse.data.choices?.[0]?.message?.content) {
-        //     textResponse = llmResponse.data.choices[0].message.content;
-        // }
-
-        if (textResponse === null) {
-             console.warn('[LLM Service/queryLlm] Warning: No textResponse field found in LLM API response.', llmResponse.data);
-             // You might want to return the full response or throw an error depending on requirements
-             // For now, returning null
-             return null;
+        if (!llmResponse.data.textResponse) {
+            console.warn('[LLM Service/queryLlm] Warning: No textResponse field found in response', llmResponse.data);
+            return null;
         }
-        
-        return textResponse;
+        return llmResponse.data.textResponse;
 
     } catch (error) {
         // Enhanced Error Logging
