@@ -12,12 +12,14 @@ import axios from 'axios';
  * @returns {Promise<string>} Formatted markdown string
  */
 async function formatMessageToMarkdown(message, userInfo) {
-    // Skip command messages, status updates, and error messages
+    // Skip command messages, status updates, and system messages
     if (
         message.text?.includes('#saveToConversations') ||
         message.text?.startsWith('Processing your export') ||
         message.text?.startsWith('Error:') ||
-        message.subtype === 'bot_message' // Skip bot status messages
+        message.text?.includes('New Assistant Thread') ||
+        message.subtype === 'bot_message' || // Skip bot status messages
+        message.type === 'system_message' // Skip system messages
     ) {
         return '';
     }
@@ -159,6 +161,38 @@ async function addToConversationsWorkspace(docPath) {
  * @returns {Promise<Object>} Response from AnythingLLM
  */
 async function uploadToAnythingLLM(content, filename) {
+    // Get a title for the conversation using AnythingLLM
+    console.log('[AnythingLLM] Getting title for conversation...');
+    try {
+        const chatResponse = await axios.post(
+            `${anythingLLMBaseUrl}/api/v1/workspace/public/chat`,
+            {
+                message: `Based on this conversation, suggest a clear and concise title (max 5 words) that captures its main topic. Only respond with the title, nothing else:\n\n${content}`,
+                mode: 'query'
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${anythingLLMApiKey}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }
+            }
+        );
+
+        const suggestedTitle = chatResponse.data.content.trim().replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-');
+        console.log('[AnythingLLM] Suggested title:', suggestedTitle);
+
+        // Create filename with title and date
+        const currentDate = new Date().toISOString().split('T')[0];
+        filename = `${suggestedTitle}-${currentDate}.md`;
+        console.log('[AnythingLLM] Final filename:', filename);
+    } catch (error) {
+        console.error('[AnythingLLM] Error getting title:', error);
+        // Fall back to default filename if title generation fails
+        const currentDate = new Date().toISOString().split('T')[0];
+        filename = `slack-conversation-${currentDate}.md`;
+    }
+
     // Create a temporary file
     const tempDir = path.join(process.cwd(), 'temp');
     if (!fs.existsSync(tempDir)) {
