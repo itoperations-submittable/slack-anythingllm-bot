@@ -412,6 +412,7 @@ async function handleSlackMessageEventInternal(event) {
 		const prNumber = parseInt( prMatch[2], 10 );
 		const workspaceSlug = prMatch[3];
 		console.log( `[Slack Handler] PR review triggered for PR gravityforms/${subRepo}#${prNumber} in workspace ${workspaceSlug}` );
+		let isGitHubCommand = true; // Mark this as a GitHub command
 
 		// Check for GITHUB_TOKEN before proceeding
 		if ( ! githubToken ) {
