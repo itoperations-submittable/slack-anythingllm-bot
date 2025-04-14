@@ -211,8 +211,10 @@ async function uploadToAnythingLLM(content, filename) {
             const moveResponse = await axios.post(
                 `${anythingLLMBaseUrl}/api/v1/document/move-files`,
                 {
-                    files: [docPath],
-                    destination: 'conversations'
+                    files: [{
+                        from: docPath,
+                        to: `conversations/${path.basename(docPath)}`
+                    }]
                 },
                 {
                     headers: {
@@ -226,7 +228,7 @@ async function uploadToAnythingLLM(content, filename) {
 
             // Add to workspace
             console.log('[AnythingLLM] Adding to workspace...');
-            const workspaceResponse = await addToConversationsWorkspace(docPath);
+            const workspaceResponse = await addToConversationsWorkspace(`conversations/${path.basename(docPath)}`);
             console.log('[AnythingLLM] Workspace response:', workspaceResponse);
 
             return {
