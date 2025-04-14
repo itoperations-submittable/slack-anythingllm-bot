@@ -171,18 +171,79 @@ async function handleSlackMessageEventInternal(event) {
     const replyTarget = threadTs || originalTs;
     console.log(`[Slack Handler] Start. User: ${userId}, Chan: ${channel}, OrigTS: ${originalTs}, ThreadTS: ${threadTs}, ReplyTargetTS: ${replyTarget}, Query: "${cleanedQuery}"`);
 
-    // If bot was mentioned in a thread, fetch the conversation history
-    let threadHistory = "";
-    if (wasMentioned && threadTs) {
-        threadHistory = await fetchConversationHistory(channel, threadTs, originalTs, isDM);
-        console.log('[Slack Handler] Thread history fetched:', threadHistory ? 'Yes' : 'No');
-        if (threadHistory) {
-            cleanedQuery = `${threadHistory}\n\nLatest question: ${cleanedQuery}`;
-        }
-    }
+    // 2. Command Handling
+    // Check for delete last message command
+    if (cleanedQuery.toLowerCase().includes('#delete_last_message')) {
+        try {
+            // Fetch thread history to find bot's last message
+            const historyResult = await slack.conversations.replies({
+                channel: channel,
+                ts: threadTs || originalTs,
+                limit: 20 // Fetch enough messages to find recent bot messages
+            });
 
-    // 2. Reset Command (Commented out, no longer needed for history)
-    // if (originalText.toLowerCase() === RESET_CONVERSATION_COMMAND) { ... return; }
+            if (historyResult.ok && historyResult.messages) {
+                // Find the last message from the bot
+                const lastBotMessage = historyResult.messages
+                    .reverse() // Start from most recent
+                    .find(msg => msg.user === botUserId && !msg.text?.includes('✅') && !msg.text?.includes('❌')); // Exclude confirmation messages
+
+                if (lastBotMessage) {
+                    try {
+                        // Try to delete the message
+                        await slack.chat.delete({
+                            channel: channel,
+                            ts: lastBotMessage.ts
+                        });
+                        console.log(`[Slack Handler] Successfully deleted last message (ts: ${lastBotMessage.ts})`);
+                        
+                        // Send confirmation and delete it after 5 seconds
+                        const confirmMsg = await slack.chat.postMessage({
+                            channel: channel,
+                            thread_ts: replyTarget,
+                            text: "✅ Last message deleted."
+                        });
+                        
+                        // Delete confirmation message after 5 seconds
+                        setTimeout(async () => {
+                            try {
+                                await slack.chat.delete({
+                                    channel: channel,
+                                    ts: confirmMsg.ts
+                                });
+                            } catch (deleteError) {
+                                console.error('[Slack Handler] Error deleting confirmation:', deleteError);
+                            }
+                        }, 5000);
+                        
+                    } catch (deleteError) {
+                        console.error('[Slack Handler] Error deleting message:', deleteError);
+                        await slack.chat.postMessage({
+                            channel: channel,
+                            thread_ts: replyTarget,
+                            text: "❌ Sorry, I couldn't delete the message. It might be too old or I might not have permission."
+                        });
+                    }
+                } else {
+                    await slack.chat.postMessage({
+                        channel: channel,
+                        thread_ts: replyTarget,
+                        text: "❌ I couldn't find my last message in this thread."
+                    });
+                }
+            } else {
+                throw new Error('Failed to fetch thread history');
+            }
+        } catch (error) {
+            console.error('[Slack Handler] Error handling delete_last_message:', error);
+            await slack.chat.postMessage({
+                channel: channel,
+                thread_ts: replyTarget,
+                text: "❌ An error occurred while trying to delete the message."
+            });
+        }
+        return; // Exit after handling delete command
+    }
 
     // 3. Post Initial Processing Message (Asynchronously)
     let thinkingMessageTs = null;
@@ -615,14 +676,8 @@ async function handleSlackMessageEventInternal(event) {
             } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
         }
 
-        // 8. Construct LLM Input (Query + Thread History)
+        // 8. Construct LLM Input (Just the query)
         let llmInputText = cleanedQuery; // Start with the base query
-        
-        // Add thread history for bot mentions in threads
-        if (wasMentioned && threadTs) {
-            // History was already fetched and added to cleanedQuery earlier
-            console.log("[Slack Handler] Using thread history in query");
-        }
         
         // --- Add instruction for non-GitHub queries --- START
         console.log("[Slack Handler] This is NOT a GitHub command, adding LLM instructions.");
@@ -767,6 +822,7 @@ async function handleSlackMessageEventInternal(event) {
                 const postResult = await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: fallbackText, blocks: blocksToSend });
                 const mainMessageTs = postResult?.ts;
                 console.log(`[Slack Handler] Posted segment ${i + 1}/${segments.length} (ts: ${mainMessageTs}).`);
+
 
                 // Post feedback buttons separately IF it's the last segment AND we have fallback text
                 if (isLastSegment && isSubstantiveResponse && mainMessageTs && fallbackText) { 
