@@ -40,7 +40,7 @@ import {
 } from './services.js';
 
 // Import Slack Handlers & Clients
-import { slackEvents, handleSlackEvent, handleInteraction } from './slack.js';
+import { slackEvents, handleSlackEvent, handleInteraction, handleSlashCommand } from './slack.js';
 
 // --- Configuration ---
 const app = express();

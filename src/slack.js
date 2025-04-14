@@ -25,7 +25,7 @@ import { Octokit } from '@octokit/rest';
 
 // Initialize Slack clients
 export const slack = new WebClient(botToken);
-export const slackEvents = createEventAdapter(signingSecret, { includeBody: true });
+const slackEvents = createEventAdapter(signingSecret, { includeBody: true });
 
 // +++ Start GitHub Integration +++
 let octokit;
@@ -799,7 +799,7 @@ async function handleSlackMessageEventInternal(event) {
 }
 
 // --- Public Event Handler Wrapper --- (Handles deduplication and filtering)
-export async function handleSlackEvent(event, body) {
+async function handleSlackEvent(event, body) {
     // *** ADDED: Log raw event object at the very start ***
     console.log("[Slack Event Wrapper RAW EVENT RECEIVED]", JSON.stringify(event, null, 2));
 
