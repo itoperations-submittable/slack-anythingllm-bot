@@ -76,9 +76,28 @@ async function formatMessageToMarkdown(message, userInfo) {
  */
 async function addToConversationsWorkspace(docPath) {
     try {
+        console.log('\n[AnythingLLM] Starting workspace update process...');
+        console.log('[AnythingLLM] Document path:', docPath);
+        console.log('[AnythingLLM] Target workspace: conversations');
+
+        const updateUrl = `${anythingLLMBaseUrl}/api/v1/workspace/conversations/update-embeddings`;
+        console.log('[AnythingLLM] Update URL:', updateUrl);
+
+        const requestBody = {
+            adds: [docPath],
+            deletes: []
+        };
+        console.log('[AnythingLLM] Request body:', JSON.stringify(requestBody, null, 2));
+        console.log('[AnythingLLM] Request headers:', {
+            'Authorization': 'Bearer [REDACTED]',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        });
+
+        // Add document to the workspace using the slug
         const response = await axios.post(
-            `${anythingLLMBaseUrl}/api/v1/workspace/conversations/documents/add`,
-            { documents: [docPath] },
+            updateUrl,
+            requestBody,
             {
                 headers: {
                     'Authorization': `Bearer ${anythingLLMApiKey}`,
@@ -87,6 +106,11 @@ async function addToConversationsWorkspace(docPath) {
                 }
             }
         );
+
+        console.log('[AnythingLLM] Workspace update successful');
+        console.log('[AnythingLLM] Response status:', response.status);
+        console.log('[AnythingLLM] Response headers:', response.headers);
+        console.log('[AnythingLLM] Response data:', JSON.stringify(response.data, null, 2));
         return response.data;
     } catch (error) {
         console.error('Error adding document to workspace:', error);
@@ -110,29 +134,53 @@ async function uploadToAnythingLLM(content, filename) {
     fs.writeFileSync(tempFile, content);
 
     try {
+        console.log('[AnythingLLM] Starting document upload process...');
+        console.log('[AnythingLLM] Temp file created at:', tempFile);
+        console.log('[AnythingLLM] File size:', fs.statSync(tempFile).size, 'bytes');
+
         // Create form data
         const form = new FormData();
         form.append('file', fs.createReadStream(tempFile));
 
+        console.log('[AnythingLLM] Uploading document:', filename);
+        console.log('[AnythingLLM] Upload URL:', `${anythingLLMBaseUrl}/api/v1/document/upload`);
+        console.log('[AnythingLLM] Request headers:', {
+            ...form.getHeaders(),
+            'Authorization': 'Bearer [REDACTED]',
+            'Accept': 'application/json'
+        });
+        
         // Upload to AnythingLLM
         const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/document/upload`, form, {
             headers: {
                 ...form.getHeaders(),
                 'Authorization': `Bearer ${anythingLLMApiKey}`,
                 'Accept': 'application/json'
-            }
+            },
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity
         });
+        
+        console.log('[AnythingLLM] Upload successful');
+        console.log('[AnythingLLM] Response status:', response.status);
+        console.log('[AnythingLLM] Response headers:', response.headers);
+        console.log('[AnythingLLM] Response data:', JSON.stringify(response.data, null, 2));
 
         const uploadResponse = response.data;
         
         // If upload successful, add to conversations workspace
         if (uploadResponse.success && uploadResponse.documents && uploadResponse.documents.length > 0) {
+            console.log('[AnythingLLM] Document uploaded successfully, adding to workspace...');
             const docPath = uploadResponse.documents[0];
             const workspaceResponse = await addToConversationsWorkspace(docPath);
+            console.log('[AnythingLLM] Workspace response:', workspaceResponse);
             return {
                 ...uploadResponse,
                 workspace: workspaceResponse
             };
+        } else {
+            console.error('[AnythingLLM] Upload response missing required data:', uploadResponse);
+            throw new Error('Upload response missing required data');
         }
         
         return uploadResponse;
@@ -155,16 +203,25 @@ export async function exportConversationToMarkdown(channelId, threadTs, uploadTo
         const channelInfo = await slack.conversations.info({ channel: channelId });
         const channelName = channelInfo.channel.name || 'unknown-channel';
 
-        // Get conversation history
-        const result = await slack.conversations.replies({
-            channel: channelId,
-            ts: threadTs,
-            limit: 1000 // Adjust as needed
-        });
+        // Get conversation history with pagination
+        let allMessages = [];
+        let cursor;
 
-        if (!result.ok || !result.messages) {
-            throw new Error('Failed to fetch conversation history');
-        }
+        do {
+            const result = await slack.conversations.replies({
+                channel: channelId,
+                ts: threadTs,
+                limit: 100,
+                cursor: cursor
+            });
+
+            if (!result.ok || !result.messages) {
+                throw new Error('Failed to fetch conversation history');
+            }
+
+            allMessages = allMessages.concat(result.messages);
+            cursor = result.response_metadata?.next_cursor;
+        } while (cursor);
 
         // User info cache to avoid repeated API calls
         const userInfo = {};
@@ -176,7 +233,7 @@ export async function exportConversationToMarkdown(channelId, threadTs, uploadTo
         markdown += `---\n\n`;
 
         // Process each message
-        for (const message of result.messages) {
+        for (const message of allMessages) {
             markdown += await formatMessageToMarkdown(message, userInfo);
         }
 
@@ -186,7 +243,7 @@ export async function exportConversationToMarkdown(channelId, threadTs, uploadTo
             channelId,
             channelName,
             threadTs,
-            messageCount: result.messages.length
+            messageCount: allMessages.length
         };
 
         const exportResult = {
