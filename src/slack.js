@@ -1033,9 +1033,33 @@ async function handleSlashCommand(req, res) {
 
     // Handle /export command
     if (req.body.command === '/export') {
-        // Check if we're in a thread
-        if (!req.body.thread_ts) {
-            res.status(200).send('/export must be used in a thread. Please use this command as a reply to a message in the thread you want to export.');
+        // Debug log the request body
+        console.log('[Slash Command Debug] Request body:', JSON.stringify(req.body, null, 2));
+
+        // Get the thread timestamp from the command text if provided
+        const threadTs = req.body.text?.trim();
+
+        // If no thread timestamp provided, get the thread info
+        if (!threadTs) {
+            try {
+                // Get replies to find the thread
+                const result = await slack.conversations.replies({
+                    channel: req.body.channel_id,
+                    ts: req.body.message_ts || req.body.ts
+                });
+
+                if (result.messages && result.messages.length > 0) {
+                    // First message is the parent
+                    const parentTs = result.messages[0].ts;
+                    handleExportCommand(req.body.channel_id, parentTs, req.body.user_id).catch(console.error);
+                    res.status(200).send('Processing your export request...');
+                    return;
+                }
+            } catch (error) {
+                console.error('Error getting thread info:', error);
+            }
+
+            res.status(200).send('Please use this command in a thread to export the conversation.');
             return;
         }
 
@@ -1043,8 +1067,8 @@ async function handleSlashCommand(req, res) {
         res.status(200).send('Processing your export request...');
 
         // Process the export in the background
-        const { channel_id, thread_ts, user_id } = req.body;
-        handleExportCommand(channel_id, thread_ts, user_id).catch(console.error);
+        handleExportCommand(req.body.channel_id, threadTs, req.body.user_id).catch(console.error);
+        res.status(200).send('Processing your export request...');
         return;
     }
 
