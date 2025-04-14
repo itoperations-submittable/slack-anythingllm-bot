@@ -404,13 +404,14 @@ async function handleSlackMessageEventInternal(event) {
 	}
 
 	// Check 2: PR Review Command
-	const prReviewRegex = /^review\s+pr\s+#(\d+)\s+#([\w-]+)/i;
-	const prMatch = ! releaseMatch && cleanedQuery.match( prReviewRegex );
+	const prReviewRegex = /^review\s+pr\s+gravityforms\/([\w-]+)#(\d+)\s+#([\w-]+)/i;
+	const prMatch = !releaseMatch && cleanedQuery.match( prReviewRegex );
 
 	if ( prMatch ) {
-		const prNumber = parseInt( prMatch[ 1 ], 10 );
-		const workspaceSlug = prMatch[ 2 ];
-		console.log( `[Slack Handler] PR review triggered for PR #${ prNumber } in workspace ${ workspaceSlug }` );
+		const subRepo = prMatch[1];
+		const prNumber = parseInt( prMatch[2], 10 );
+		const workspaceSlug = prMatch[3];
+		console.log( `[Slack Handler] PR review triggered for PR gravityforms/${subRepo}#${prNumber} in workspace ${workspaceSlug}` );
 
 		// Check for GITHUB_TOKEN before proceeding
 		if ( ! githubToken ) {
@@ -435,26 +436,26 @@ async function handleSlackMessageEventInternal(event) {
 				// Fetch PR details
 				const { data: pr } = await octokit.pulls.get( {
 					owner: 'gravityforms',
-					repo: 'backlog',
+					repo: subRepo,
 					pull_number: prNumber
 				} );
 
 				// Fetch PR comments
 				const { data: comments } = await octokit.issues.listComments( {
 					owner: 'gravityforms',
-					repo: 'backlog',
+					repo: subRepo,
 					issue_number: prNumber
 				} );
 
 				// Fetch PR files
 				const { data: files } = await octokit.pulls.listFiles( {
 					owner: 'gravityforms',
-					repo: 'backlog',
+					repo: subRepo,
 					pull_number: prNumber
 				} );
 
 				// Construct PR context
-				let prContext = `**Pull Request:** gravityforms/backlog#${ prNumber }\n`;
+				let prContext = `**Pull Request:** gravityforms/${subRepo}#${prNumber}\n`;
 				prContext += `**Title:** ${ pr.title }\n`;
 				prContext += `**Description:**\n${ pr.body || '(No description)' }\n\n`;
 				prContext += `**Changes:**\n`;
@@ -548,11 +549,11 @@ ${ prContext }`;
 				}
 				return;
 			} catch ( error ) {
-				console.error( `[Slack Handler] Error during PR review for #${ prNumber }:`, error );
+				console.error( `[Slack Handler] Error during PR review for gravityforms/${subRepo}#${prNumber}:`, error );
 				await slack.chat.postMessage( {
 					channel,
 					thread_ts: replyTarget,
-					text: `Sorry, I encountered an error trying to review PR #${ prNumber }.`
+					text: `Sorry, I encountered an error trying to review PR gravityforms/${subRepo}#${prNumber}.`
 				} ).catch( () => {
 				} );
 				const ts = await thinkingMessagePromise;
