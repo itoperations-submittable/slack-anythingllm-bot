@@ -186,8 +186,8 @@ async function uploadToAnythingLLM(content, filename) {
 
         console.log('[AnythingLLM] Chat response:', JSON.stringify(chatResponse.data, null, 2));
         
-        // Get title from LLM response
-        const suggestedTitle = chatResponse.data.textResponse;
+        // Get title from LLM response and clean it up
+        let suggestedTitle = chatResponse.data.textResponse;
         if (!suggestedTitle) {
             throw new Error('No title found in response');
         }
