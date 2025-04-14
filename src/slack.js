@@ -367,7 +367,157 @@ async function handleSlackMessageEventInternal(event) {
         }
     }
 
-    // Check 2: Issue Analysis
+    // Check 2: PR Review Command
+    const prReviewRegex = /^review\s+pr\s+#(\d+)\s+#([\w-]+)/i;
+    const prMatch = !releaseMatch && cleanedQuery.match(prReviewRegex);
+
+    if (prMatch) {
+        const prNumber = parseInt(prMatch[1], 10);
+        const workspaceSlug = prMatch[2];
+        console.log(`[Slack Handler] PR review triggered for PR #${prNumber} in workspace ${workspaceSlug}`);
+
+        // Check for GITHUB_TOKEN before proceeding
+        if (!githubToken) {
+            console.error("[Slack Handler] GITHUB_TOKEN is missing. Cannot perform PR review.");
+            await slack.chat.postMessage({ channel, thread_ts: replyTarget, text: `Sorry, I can't review PRs because the GITHUB_TOKEN is not configured.` }).catch(() => {});
+            const ts = await thinkingMessagePromise; if (ts) { slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{});
+            return;
+        }
+
+        try {
+            await thinkingMessagePromise; // Ensure thinking message is posted
+            const octokit = new Octokit({ auth: githubToken });
+
+            // Fetch PR details
+            const { data: pr } = await octokit.pulls.get({
+                owner: 'gravityforms',
+                repo: 'backlog',
+                pull_number: prNumber
+            });
+
+            // Fetch PR comments
+            const { data: comments } = await octokit.issues.listComments({
+                owner: 'gravityforms',
+                repo: 'backlog',
+                issue_number: prNumber
+            });
+
+            // Fetch PR files
+            const { data: files } = await octokit.pulls.listFiles({
+                owner: 'gravityforms',
+                repo: 'backlog',
+                pull_number: prNumber
+            });
+
+            // Construct PR context
+            let prContext = `**Pull Request:** gravityforms/backlog#${prNumber}\n`;
+            prContext += `**Title:** ${pr.title}\n`;
+            prContext += `**Description:**\n${pr.body || '(No description)'}\n\n`;
+            prContext += `**Changes:**\n`;
+            
+            // Add file changes (limit diff size for large PRs)
+            const MAX_DIFF_SIZE = 5000; // Characters per file
+            files.forEach(file => {
+                prContext += `\n**File:** ${file.filename}\n`;
+                prContext += `**Status:** ${file.status} (${file.additions} additions, ${file.deletions} deletions)\n`;
+                if (file.patch) {
+                    const truncatedDiff = file.patch.length > MAX_DIFF_SIZE 
+                        ? file.patch.substring(0, MAX_DIFF_SIZE) + '\n... (diff truncated)'
+                        : file.patch;
+                    prContext += `\`\`\`diff\n${truncatedDiff}\n\`\`\`\n`;
+                }
+            });
+
+            // Add comments
+            if (comments.length > 0) {
+                prContext += `\n**Comments:**\n`;
+                comments.forEach(comment => {
+                    prContext += `*${comment.user.login}:* ${comment.body.substring(0, 300)}${comment.body.length > 300 ? '...' : ''}\n---\n`;
+                });
+            }
+
+            // Create detailed review prompt
+            const reviewPrompt = `You are performing a code review of this Pull Request. Please provide a comprehensive review that includes:
+
+1. Overview:
+   - Brief summary of the changes
+   - The main purpose of this PR
+   - Impact and scope of changes
+
+2. Code Analysis:
+   - Code quality and best practices
+   - Potential bugs or issues
+   - Performance implications
+   - Security considerations
+   - Test coverage
+
+3. Specific Recommendations:
+   - Concrete suggestions for improvements
+   - Alternative approaches if applicable
+   - Any missing documentation
+
+4. Summary:
+   - Overall assessment
+   - Key points that need attention
+   - Whether the PR is ready to merge
+
+Please be specific and provide examples when pointing out issues or suggesting improvements. If you see something good, mention that as well.
+
+Here's the PR context:
+
+${prContext}`;
+
+            // Query LLM with the workspace from the command
+            console.log(`[Slack Handler] Requesting LLM analysis for PR #${prNumber} in workspace ${workspaceSlug}`);
+            const analysisResponse = await queryLlm(workspaceSlug, `pr_review_${prNumber}`, reviewPrompt);
+
+            if (!analysisResponse) throw new Error('LLM failed to provide analysis.');
+
+            // Process and send the response
+            const segments = extractTextAndCode(analysisResponse);
+            for (let i = 0; i < segments.length; i++) {
+                const blocksToSend = [];
+                const segment = segments[i];
+                if (segment.type === 'text') {
+                    const block = markdownToRichTextBlock(segment.content);
+                    if (block) blocksToSend.push(block);
+                } else if (segment.type === 'code') {
+                    const block = markdownToRichTextBlock(`\`\`\`${segment.language || ''}\n${segment.content}\`\`\``);
+                    if (block) blocksToSend.push(block);
+                }
+                if (blocksToSend.length > 0) {
+                    await slack.chat.postMessage({
+                        channel,
+                        thread_ts: replyTarget,
+                        text: `PR Review Part ${i+1}`,
+                        blocks: blocksToSend
+                    });
+                    console.log(`[Slack Handler] Posted review segment ${i+1}/${segments.length}`);
+                }
+            }
+
+            // Cleanup thinking message
+            const ts = await thinkingMessagePromise;
+            if (ts) { 
+                await slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{});
+            }
+            return;
+        } catch (error) {
+            console.error(`[Slack Handler] Error during PR review for #${prNumber}:`, error);
+            await slack.chat.postMessage({
+                channel,
+                thread_ts: replyTarget,
+                text: `Sorry, I encountered an error trying to review PR #${prNumber}.`
+            }).catch(() => {});
+            const ts = await thinkingMessagePromise;
+            if (ts) { 
+                await slack.chat.delete({ channel: channel, ts: ts }).catch(()=>{});
+            }
+            return;
+        }
+    }
+
+    // Check 3: Issue Analysis
     const issueTriggerRegex = /^(analyze|summarize|explain|check|look into)\s+(issue|backlog)\s+#(\d+)/i;
     // --- DEBUG LOGGING --- 
     console.log(`[Slack Handler DEBUG] cleanedQuery for regex match: \"${cleanedQuery}\"`);
