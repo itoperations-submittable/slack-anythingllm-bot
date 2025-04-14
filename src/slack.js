@@ -429,6 +429,7 @@ async function handleSlackMessageEventInternal(event) {
 				} );
 				return;
 			}
+		} else {
 
 			try {
 				await thinkingMessagePromise; // Ensure thinking message is posted
