@@ -809,12 +809,7 @@ export async function handleSlackEvent(event, body) {
          return;
     }
 
-    // Check for export command
-    if (event.type === 'message' && event.text?.toLowerCase().trim() === '/export') {
-        console.log('[Slack Event Wrapper] Export command detected');
-        await handleExportCommand(event.channel, event.thread_ts || event.ts, event.user);
-        return;
-    }
+    // Note: Export command is now handled via /slack/commands endpoint
 
     const { subtype, user: messageUserId, channel: channelId, text = '' } = event;
 
@@ -1028,3 +1023,27 @@ export async function handleInteraction(req, res) {
         console.error("[Interaction Handling Error] An error occurred:", error);
     }
 }
+
+// --- Slash Command Handler ---
+async function handleSlashCommand(req, res) {
+    // Verify the request is from Slack
+    if (!req.body || !req.body.command) {
+        return res.status(400).send('Invalid slash command request');
+    }
+
+    // Handle /export command
+    if (req.body.command === '/export') {
+        // Acknowledge receipt of the command immediately
+        res.status(200).send('Processing your export request...');
+
+        // Process the export in the background
+        const { channel_id, thread_ts, user_id } = req.body;
+        handleExportCommand(channel_id, thread_ts || req.body.ts, user_id).catch(console.error);
+        return;
+    }
+
+    // Unknown command
+    res.status(404).send('Unknown command');
+}
+
+export { slackEvents, handleSlackEvent, handleInteraction, handleSlashCommand };

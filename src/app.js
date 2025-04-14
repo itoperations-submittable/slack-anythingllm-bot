@@ -65,9 +65,10 @@ if (!databaseUrl) {
 // Events API listener *MUST* come before any body parsers that consume the raw body
 app.use('/slack/events', slackEvents.requestListener());
 
-// --- Interaction Endpoint ---
-// Apply urlencoded middleware specifically to this route for Slack interactions
+// --- Interaction & Command Endpoints ---
+// Apply urlencoded middleware specifically to these routes for Slack interactions
 app.post('/slack/interactions', express.urlencoded({ extended: true, limit: '1mb' }), handleInteraction);
+app.post('/slack/commands', express.urlencoded({ extended: true }), handleSlashCommand);
 
 // --- Basic Health Check Route ---
 app.get('/', (req, res) => {
