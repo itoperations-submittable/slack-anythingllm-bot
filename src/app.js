@@ -40,7 +40,7 @@ import {
 } from './services.js';
 
 // Import Slack Handlers & Clients
-import { slackEvents, handleSlackEvent, handleInteraction, handleSlashCommand } from './slack.js';
+import { slackEvents, handleSlackEvent, handleInteraction } from './slack.js';
 
 // --- Configuration ---
 const app = express();
@@ -65,10 +65,9 @@ if (!databaseUrl) {
 // Events API listener *MUST* come before any body parsers that consume the raw body
 app.use('/slack/events', slackEvents.requestListener());
 
-// --- Interaction & Command Endpoints ---
-// Apply urlencoded middleware specifically to these routes for Slack interactions
+// --- Interaction Endpoint ---
+// Apply urlencoded middleware specifically to this route for Slack interactions
 app.post('/slack/interactions', express.urlencoded({ extended: true, limit: '1mb' }), handleInteraction);
-app.post('/slack/commands', express.urlencoded({ extended: true }), handleSlashCommand);
 
 // --- Basic Health Check Route ---
 app.get('/', (req, res) => {

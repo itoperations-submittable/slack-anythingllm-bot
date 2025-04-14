@@ -809,7 +809,12 @@ async function handleSlackEvent(event, body) {
          return;
     }
 
-    // Note: Export command is now handled via /slack/commands endpoint
+    // Check for #saveToConversations hashtag
+    if (event.type === 'message' && event.text?.includes('#saveToConversations')) {
+        console.log('[Slack Event] #saveToConversations detected in thread');
+        await handleExportCommand(event.channel, event.thread_ts || event.ts, event.user);
+        return;
+    }
 
     const { subtype, user: messageUserId, channel: channelId, text = '' } = event;
 
@@ -1024,56 +1029,4 @@ async function handleInteraction(req, res) {
     }
 }
 
-// --- Slash Command Handler ---
-async function handleSlashCommand(req, res) {
-    // Verify the request is from Slack
-    if (!req.body || !req.body.command) {
-        return res.status(400).send('Invalid slash command request');
-    }
-
-    // Handle /export command
-    if (req.body.command === '/export') {
-        // Debug log the request body
-        console.log('[Slash Command Debug] Request body:', JSON.stringify(req.body, null, 2));
-
-        // Get the thread timestamp from the command text if provided
-        const threadTs = req.body.text?.trim();
-
-        // If no thread timestamp provided, get the thread info
-        if (!threadTs) {
-            try {
-                // Get replies to find the thread
-                const result = await slack.conversations.replies({
-                    channel: req.body.channel_id,
-                    ts: req.body.message_ts || req.body.ts
-                });
-
-                if (result.messages && result.messages.length > 0) {
-                    // First message is the parent
-                    const parentTs = result.messages[0].ts;
-                    handleExportCommand(req.body.channel_id, parentTs, req.body.user_id).catch(console.error);
-                    res.status(200).send('Processing your export request...');
-                    return;
-                }
-            } catch (error) {
-                console.error('Error getting thread info:', error);
-            }
-
-            res.status(200).send('Please use this command in a thread to export the conversation.');
-            return;
-        }
-
-        // Acknowledge receipt of the command immediately
-        res.status(200).send('Processing your export request...');
-
-        // Process the export in the background
-        handleExportCommand(req.body.channel_id, threadTs, req.body.user_id).catch(console.error);
-        res.status(200).send('Processing your export request...');
-        return;
-    }
-
-    // Unknown command
-    res.status(404).send('Unknown command');
-}
-
-export { slackEvents, handleSlackEvent, handleInteraction, handleSlashCommand };
+export { slackEvents, handleSlackEvent, handleInteraction };
