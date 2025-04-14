@@ -1033,12 +1033,18 @@ async function handleSlashCommand(req, res) {
 
     // Handle /export command
     if (req.body.command === '/export') {
+        // Check if we're in a thread
+        if (!req.body.thread_ts) {
+            res.status(200).send('/export must be used in a thread. Please use this command as a reply to a message in the thread you want to export.');
+            return;
+        }
+
         // Acknowledge receipt of the command immediately
         res.status(200).send('Processing your export request...');
 
         // Process the export in the background
         const { channel_id, thread_ts, user_id } = req.body;
-        handleExportCommand(channel_id, thread_ts || req.body.ts, user_id).catch(console.error);
+        handleExportCommand(channel_id, thread_ts, user_id).catch(console.error);
         return;
     }
 
