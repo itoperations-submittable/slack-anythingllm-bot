@@ -171,6 +171,16 @@ async function handleSlackMessageEventInternal(event) {
     const replyTarget = threadTs || originalTs;
     console.log(`[Slack Handler] Start. User: ${userId}, Chan: ${channel}, OrigTS: ${originalTs}, ThreadTS: ${threadTs}, ReplyTargetTS: ${replyTarget}, Query: "${cleanedQuery}"`);
 
+    // If bot was mentioned in a thread, fetch the conversation history
+    let threadHistory = "";
+    if (wasMentioned && threadTs) {
+        threadHistory = await fetchConversationHistory(channel, threadTs, originalTs, isDM);
+        console.log('[Slack Handler] Thread history fetched:', threadHistory ? 'Yes' : 'No');
+        if (threadHistory) {
+            cleanedQuery = `${threadHistory}\n\nLatest question: ${cleanedQuery}`;
+        }
+    }
+
     // 2. Reset Command (Commented out, no longer needed for history)
     // if (originalText.toLowerCase() === RESET_CONVERSATION_COMMAND) { ... return; }
 
@@ -605,8 +615,14 @@ async function handleSlackMessageEventInternal(event) {
             } catch (updateError) { console.warn(`[Slack Handler] Failed update thinking message:`, updateError.data?.error || updateError.message); }
         }
 
-        // 8. Construct LLM Input (Just the query)
+        // 8. Construct LLM Input (Query + Thread History)
         let llmInputText = cleanedQuery; // Start with the base query
+        
+        // Add thread history for bot mentions in threads
+        if (wasMentioned && threadTs) {
+            // History was already fetched and added to cleanedQuery earlier
+            console.log("[Slack Handler] Using thread history in query");
+        }
         
         // --- Add instruction for non-GitHub queries --- START
         console.log("[Slack Handler] This is NOT a GitHub command, adding LLM instructions.");
