@@ -890,7 +890,7 @@ async function handleExportCommand(channel, thread_ts, user) {
 }
 
 // --- Interaction Handler --- (Handles button clicks etc.)
-export async function handleInteraction(req, res) {
+async function handleInteraction(req, res) {
     console.warn("!!! Interaction signature verification is NOT IMPLEMENTED !!!");
 
     let payload;
