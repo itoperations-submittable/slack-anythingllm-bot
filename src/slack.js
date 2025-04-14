@@ -516,7 +516,7 @@ ${ prContext }`;
 
 				// Query LLM with the workspace from the command
 				console.log( `[Slack Handler] Requesting LLM analysis for PR #${ prNumber } in workspace ${ workspaceSlug }` );
-				const analysisResponse = await queryLlm( workspaceSlug, `pr_review_${ prNumber }`, reviewPrompt );
+				const analysisResponse = await queryLlm( workspaceSlug, null, reviewPrompt );
 
 				if ( ! analysisResponse ) throw new Error( 'LLM failed to provide analysis.' );
 

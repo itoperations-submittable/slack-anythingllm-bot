@@ -87,13 +87,13 @@ async function getAvailableSphereSlugs() {
 export async function createNewAnythingLLMThread(sphere) {
     console.log(`[LLM Service/createThread] Creating new thread in sphere: ${sphere}...`);
     try {
-        const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/thread/new`, 
+        const response = await axios.post(`${anythingLLMBaseUrl}/api/v1/workspace/${sphere}/thread/new`,
             {}, // No body needed for thread creation
-            { 
+            {
                 headers: { Authorization: `Bearer ${anythingLLMApiKey}` },
                 timeout: 15000, // 15s timeout for thread creation
             });
-        
+
         if (response.data && response.data.thread && response.data.thread.slug) {
             const newThreadSlug = response.data.thread.slug;
             console.log(`[LLM Service/createThread] Successfully created thread with slug: ${newThreadSlug}`);
@@ -176,7 +176,7 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText, mode = 
         }
         console.error('[LLM Error Config]:', error.config); // Log request config
 
-        const errorMsg = `LLM query failed for sphere ${sphere}${anythingLLMThreadSlug ? ", thread "+anythingLLMThreadSlug : ''}: ${errorDetails}`; 
+        const errorMsg = `LLM query failed for sphere ${sphere}${anythingLLMThreadSlug ? ", thread "+anythingLLMThreadSlug : ''}: ${errorDetails}`;
         console.error(`[LLM Error Full Context]`, errorMsg); // Log the final constructed message
         throw new Error(errorMsg); // Rethrow with more context
     }
