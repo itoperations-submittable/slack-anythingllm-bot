@@ -164,10 +164,15 @@ async function uploadToAnythingLLM(content, filename) {
     // Get a title for the conversation using AnythingLLM
     console.log('[AnythingLLM] Getting title for conversation...');
     try {
+        const requestPrompt = 'Based on this conversation, suggest a clear and concise title (not less or more than 10 words) that captures its main topic. Only respond with the title, nothing else:';
+        const requestMessage = `${requestPrompt}\n\n${content}`;
+        console.log('[AnythingLLM] Title request prompt:', requestPrompt);
+        console.log('[AnythingLLM] Content length:', content.length, 'characters');
+
         const chatResponse = await axios.post(
-            `${anythingLLMBaseUrl}/api/v1/workspace/public/chat`,
+            `${anythingLLMBaseUrl}/api/v1/workspace/all/chat`,
             {
-                message: `Based on this conversation, suggest a clear and concise title (not less or more than 10 words) that captures its main topic. Only respond with the title, nothing else:\n\n${content}`,
+                message: requestMessage,
                 mode: 'query'
             },
             {
