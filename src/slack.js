@@ -858,13 +858,12 @@ async function handleExportCommand(channel, thread_ts, user) {
         // Export the conversation and upload to AnythingLLM
         const { content, metadata, llmResponse, llmError } = await exportConversationToMarkdown(channel, thread_ts, true);
         
-        // Upload as a file in Slack
-        await slack.files.upload({
-            channels: channel,
+        // Upload as a file in Slack using uploadV2
+        await slack.files.uploadV2({
+            channel_id: channel,
             thread_ts: thread_ts,
             content: content,
             filename: `conversation-${metadata.channelName}-${thread_ts}.md`,
-            filetype: 'markdown',
             title: `Conversation Export - #${metadata.channelName}`,
             initial_comment: 'Here\'s your conversation export! :file_folder:'
         });
