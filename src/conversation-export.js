@@ -12,6 +12,16 @@ import axios from 'axios';
  * @returns {Promise<string>} Formatted markdown string
  */
 async function formatMessageToMarkdown(message, userInfo) {
+    // Skip command messages, status updates, and error messages
+    if (
+        message.text?.includes('#saveToConversations') ||
+        message.text?.startsWith('Processing your export') ||
+        message.text?.startsWith('Error:') ||
+        message.subtype === 'bot_message' // Skip bot status messages
+    ) {
+        return '';
+    }
+
     // Get user info if not in cache
     if (!userInfo[message.user]) {
         try {
@@ -192,14 +202,36 @@ async function uploadToAnythingLLM(content, filename) {
 
         const uploadResponse = response.data;
         
-        // If upload successful, add to conversations workspace
+        // If upload successful, move to conversations folder and add to workspace
         if (uploadResponse.success && uploadResponse.documents && uploadResponse.documents.length > 0) {
-            console.log('[AnythingLLM] Document uploaded successfully, adding to workspace...');
+            console.log('[AnythingLLM] Document uploaded successfully, moving to conversations folder...');
             const docPath = uploadResponse.documents[0].location;
+
+            // Move file to conversations folder
+            const moveResponse = await axios.post(
+                `${anythingLLMBaseUrl}/api/v1/document/move-files`,
+                {
+                    files: [docPath],
+                    destination: 'conversations'
+                },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${anythingLLMApiKey}`,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    }
+                }
+            );
+            console.log('[AnythingLLM] Move response:', moveResponse.data);
+
+            // Add to workspace
+            console.log('[AnythingLLM] Adding to workspace...');
             const workspaceResponse = await addToConversationsWorkspace(docPath);
             console.log('[AnythingLLM] Workspace response:', workspaceResponse);
+
             return {
                 ...uploadResponse,
+                move: moveResponse.data,
                 workspace: workspaceResponse
             };
         } else {
