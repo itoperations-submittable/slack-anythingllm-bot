@@ -27,7 +27,31 @@ async function formatMessageToMarkdown(message, userInfo) {
     const timestamp = new Date(parseFloat(message.ts) * 1000).toISOString();
     
     // Format the message text
-    let messageText = message.text || '';
+    let messageText = '';
+    
+    // Handle message blocks if present
+    if (message.blocks) {
+        messageText = message.blocks.map(block => {
+            if (block.type === 'rich_text') {
+                return block.elements.map(element => {
+                    if (element.type === 'rich_text_section') {
+                        return element.elements?.map(el => el.text || el.url || '').join('') || '';
+                    } else if (element.type === 'rich_text_preformatted') {
+                        return `\n\`\`\`\n${element.elements?.map(el => el.text || '').join('')}\n\`\`\`\n`;
+                    } else if (element.type === 'rich_text_quote') {
+                        return `> ${element.elements?.map(el => el.text || '').join('')}\n`;
+                    }
+                    return '';
+                }).join('\n');
+            }
+            return '';
+        }).join('\n');
+    }
+    
+    // Fallback to plain text if no blocks or empty blocks
+    if (!messageText.trim()) {
+        messageText = message.text || '';
+    }
     
     // Handle code blocks
     messageText = messageText.replace(/```(\w+)?\n([\s\S]+?)```/g, (match, lang, code) => {
@@ -171,7 +195,7 @@ async function uploadToAnythingLLM(content, filename) {
         // If upload successful, add to conversations workspace
         if (uploadResponse.success && uploadResponse.documents && uploadResponse.documents.length > 0) {
             console.log('[AnythingLLM] Document uploaded successfully, adding to workspace...');
-            const docPath = uploadResponse.documents[0];
+            const docPath = uploadResponse.documents[0].location;
             const workspaceResponse = await addToConversationsWorkspace(docPath);
             console.log('[AnythingLLM] Workspace response:', workspaceResponse);
             return {
