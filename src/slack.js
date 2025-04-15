@@ -44,52 +44,6 @@ if (githubToken) {
     console.warn("[App] GITHUB_TOKEN not set. GitHub dependent features may fail.");
 }
 
-// --- History Fetching --- (Adapted from original handler)
-async function fetchConversationHistory(channel, threadTs, originalTs, isDM) {
-    const HISTORY_LIMIT = 10;
-    let historyResult;
-    try {
-        if (!isDM && threadTs) {
-            console.log(`[Slack Service/History] Fetching thread replies: Channel=${channel}, ThreadTS=${threadTs}`);
-            historyResult = await slack.conversations.replies({
-                channel: channel,
-                ts: threadTs,
-                limit: HISTORY_LIMIT + 1,
-            });
-        } else {
-            console.log(`[Slack Service/History] Fetching channel/DM history: Channel=${channel}, Latest=${originalTs}, isDM=${isDM}`);
-            historyResult = await slack.conversations.history({
-                channel: channel,
-                latest: originalTs,
-                limit: HISTORY_LIMIT,
-                inclusive: false
-            });
-        }
-
-        if (historyResult.ok && historyResult.messages) {
-            const relevantMessages = historyResult.messages
-                .filter(msg => msg.user && msg.text && msg.user !== botUserId)
-                .reverse();
-
-            if (relevantMessages.length > 0) {
-                let history = "Conversation History:\n";
-                relevantMessages.forEach(msg => {
-                    history += `User ${msg.user}: ${msg.text}\n`;
-                });
-                console.log(`[Slack Service/History] Fetched ${relevantMessages.length} relevant messages.`);
-                return history;
-            } else {
-                console.log("[Slack Service/History] No relevant prior messages found.");
-            }
-        } else {
-            console.warn("[Slack Service/History] Failed fetch history:", historyResult.error || "No messages found");
-        }
-    } catch (error) {
-        console.error("[Slack Service/History Error]", error);
-    }
-    return ""; // Return empty string if no history or error
-}
-
 // --- Feedback Storage --- (Adapted from original handler)
 async function storeFeedback(feedbackData) {
     if (!databaseUrl || !dbPool) {
@@ -126,7 +80,7 @@ async function storeFeedback(feedbackData) {
 
 // --- Public Event Handler Wrapper --- (Handles deduplication and filtering)
 async function handleSlackEvent(event, body) {
- 
+
     const eventId = body?.event_id || `no-id:${event.event_ts}`;
     if (await isDuplicateRedis(eventId)) {
         console.log(`[Slack Event Wrapper] Duplicate event skipped: ${eventId}`);
@@ -153,6 +107,7 @@ async function handleSlackEvent(event, body) {
         const isDM = channelId.startsWith('D');
         const mentionString = `<@${botUserId}>`;
         const wasMentioned = text.includes(mentionString);
+
 
         // *** ADDED: Detailed logging before relevance check ***
         console.log(`[Slack Event Wrapper DEBUG] Event ID: ${eventId}, Type: ${event.type}, Subtype: ${subtype}, User: ${messageUserId}, Channel: ${channelId}, IsDM: ${isDM}, MentionString: "${mentionString}", WasMentioned: ${wasMentioned}, Text: "${text.substring(0, 100)}..."`);

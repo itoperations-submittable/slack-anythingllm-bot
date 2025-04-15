@@ -1,3 +1,7 @@
 node_modules/
 .env
 logs/
+/coverage
+src/.DS_Store
+.DS_Store
+.idea

@@ -59,7 +59,7 @@ async function handleSlackMessageEventInternal(event, slack, appOctokitInstance)
 	console.log( `[Message Handler] Start. User: ${ userId }, Chan: ${ channel }, OrigTS: ${ originalTs }, ThreadTS: ${ threadTs }, ReplyTargetTS: ${ replyTarget }, Query: "${ cleanedQuery }"` );
 
 	// 2. Handle #delete_last_message command USING the imported handler
-	if ( cleanedQuery.toLowerCase().includes( '#delete_last_message' ) ) {
+	if ( cleanedQuery.toLowerCase().startsWith( '#delete_last_message' ) ) {
 		console.log("[Message Handler] Delete command detected, calling command handler...");
 		// Call the imported handler function
 		const deleteHandled = await handleDeleteLastMessageCommand(channel, replyTarget, botUserId, slack);
@@ -170,7 +170,17 @@ async function handleSlackMessageEventInternal(event, slack, appOctokitInstance)
 		console.log( "[Message Handler] No specific command handled by command handlers, proceeding to main LLM." );
 	}
 
+
 	// 5. --- Main Processing Logic (Fallback if no command handled) ---
+
+	if ( wasMentioned && threadTs) {
+		const threadHistory = await fetchConversationHistory(channel, threadTs, originalTs, isDM );
+		console.log('[Slack Handler] Thread history fetched:', threadHistory ? 'Yes' : 'No');
+		if (threadHistory) {
+			cleanedQuery = `${threadHistory}\n\nLatest question: ${cleanedQuery}`;
+		}
+	}
+
 	try {
 		// Update Thinking Message
 		const messageTs = await thinkingMessagePromise;
@@ -192,7 +202,7 @@ async function handleSlackMessageEventInternal(event, slack, appOctokitInstance)
 
 		// Construct LLM Input
 		let llmInputText = cleanedQuery;
-		const instruction = '\n\nIMPORTANT: Please do not include context references...';
+		const instruction = '\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations, Please do not confirm that you understand my request, just understand it.';
 		llmInputText += instruction;
 
 		console.log( `[Message Handler] Sending query to AnythingLLM Thread ${ workspaceSlugForThread }:${ anythingLLMThreadSlug }...` );
@@ -323,4 +333,49 @@ async function handleSlackMessageEventInternal(event, slack, appOctokitInstance)
 	}
 }
 
+// --- History Fetching --- (Adapted from original handler)
+async function fetchConversationHistory(channel, threadTs, originalTs, isDM) {
+    const HISTORY_LIMIT = 10;
+    let historyResult;
+    try {
+        if (!isDM && threadTs) {
+            console.log(`[Slack Service/History] Fetching thread replies: Channel=${channel}, ThreadTS=${threadTs}`);
+            historyResult = await slack.conversations.replies({
+                channel: channel,
+                ts: threadTs,
+                limit: HISTORY_LIMIT + 1,
+            });
+        } else {
+            console.log(`[Slack Service/History] Fetching channel/DM history: Channel=${channel}, Latest=${originalTs}, isDM=${isDM}`);
+            historyResult = await slack.conversations.history({
+                channel: channel,
+                latest: originalTs,
+                limit: HISTORY_LIMIT,
+                inclusive: false
+            });
+        }
+
+        if (historyResult.ok && historyResult.messages) {
+            const relevantMessages = historyResult.messages
+                .filter(msg => msg.user && msg.text && msg.user !== botUserId)
+                .reverse();
+
+            if (relevantMessages.length > 0) {
+                let history = "Conversation History:\n";
+                relevantMessages.forEach(msg => {
+                    history += `User ${msg.user}: ${msg.text}\n`;
+                });
+                console.log(`[Slack Service/History] Fetched ${relevantMessages.length} relevant messages.`);
+                return history;
+            } else {
+                console.log("[Slack Service/History] No relevant prior messages found.");
+            }
+        } else {
+            console.warn("[Slack Service/History] Failed fetch history:", historyResult.error || "No messages found");
+        }
+    } catch (error) {
+        console.error("[Slack Service/History Error]", error);
+    }
+    return ""; // Return empty string if no history or error
+}
 export { handleSlackMessageEventInternal };

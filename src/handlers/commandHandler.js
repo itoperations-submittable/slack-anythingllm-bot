@@ -576,7 +576,7 @@ async function handleGithubApiCommand(cleanedQuery, replyTarget, channel, slack,
             await slack.chat.postMessage({
                 channel: channel,
                 thread_ts: replyTarget,
-                text: `⚠️ Sorry, I couldn't understand the API instructions from the GitHub knowledge base. The response wasn't valid JSON even after cleaning.\n\nRaw response: \`\`\`${responseText}\`\`\``
+                text: `⚠️ Sorry, I couldn't translate your query to something github understands.\n\nRaw response: \`\`\`${responseText}\`\`\``
             });
              const ts = await thinkingMessagePromise; // Cleanup thinking message on parse error
              if (ts) slack.chat.delete({ channel: channel, ts: ts }).catch(() => {});

@@ -1,6 +1,6 @@
-import { extractTextAndCode, getSlackFiletype, splitMessageIntoChunks } from '../src/utils.js';
+import { extractTextAndCode, getSlackFiletype, splitMessageIntoChunks } from '../src/formattingService.js';
 
-describe('Utils Tests', () => {
+describe('Formatting Service Tests', () => {
   describe('extractTextAndCode', () => {
     test('should extract text and a single code block', () => {
       const rawText = 'This is some text.\n```javascript\nconsole.log("Hello");\n```\nMore text.';
