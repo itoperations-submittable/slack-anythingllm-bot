@@ -5,12 +5,13 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles"
   },
   "dependencies": {
+    "@octokit/rest": "^20.1.0",
     "@slack/events-api": "^3.0.1",
     "@slack/web-api": "^6.10.0",
-    "@octokit/rest": "^20.1.0",
     "axios": "^1.6.7",
     "body-parser": "^1.20.2",
     "dotenv": "^16.4.7",
@@ -24,5 +25,16 @@
     "node": ">=18.0.0"
   },
   "author": "Your Name",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-fetch-mock": "^3.0.3"
+  },
+  "jest": {
+    "setupFilesAfterEnv": [
+      "<rootDir>/tests/setup.js"
+    ],
+    "testEnvironment": "node",
+    "transform": {}
+  }
 }
