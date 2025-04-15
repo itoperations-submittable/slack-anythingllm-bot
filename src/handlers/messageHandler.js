@@ -202,7 +202,8 @@ async function handleSlackMessageEventInternal(event, slack, appOctokitInstance)
 
 		// Construct LLM Input
 		let llmInputText = cleanedQuery;
-		const instruction = '\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations, Please do not confirm that you understand my request, just understand it.';
+		const instruction = '\n\nIMPORTANT: Please do not include context references (like "CONTEXT 0", "CONTEXT 1", etc.) in your response. Provide a clean, professional answer without these annotations, Please do not confirm that you understand my request, just understand it.' +
+			'';
 		llmInputText += instruction;
 
 		console.log( `[Message Handler] Sending query to AnythingLLM Thread ${ workspaceSlugForThread }:${ anythingLLMThreadSlug }...` );
