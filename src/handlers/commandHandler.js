@@ -627,7 +627,7 @@ async function handleGithubApiCommand(cleanedQuery, replyTarget, channel, slack,
             }
 
             console.log("[Command Handler] Splitting final response for Slack.");
-            const chunks = splitMessageIntoChunks(finalResponseText, MAX_SLACK_BLOCK_TEXT_LENGTH); // Need import for MAX length
+            const chunks = splitMessageIntoChunks( finalResponseText );
             console.log(`[Command Handler] Split into ${chunks.length} chunk(s).`);
             for (let i = 0; i < chunks.length; i++) {
                 const chunk = chunks[i];
