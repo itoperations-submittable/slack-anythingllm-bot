@@ -1,12 +1,12 @@
 // src/handlers/commandHandler.js
 // This file will contain handlers for specific commands or message triggers.
 
-// No direct imports needed *yet* for this specific handler, 
+// No direct imports needed *yet* for this specific handler,
 // but we might need them for others (e.g., config, services)
 
 // Add imports needed for release command
 import { getLatestRelease } from '../githubService.js';
-import { markdownToRichTextBlock, extractTextAndCode } from '../formattingService.js';
+import { markdownToRichTextBlock, extractTextAndCode, splitMessageIntoChunks } from '../formattingService.js';
 // Add imports needed for PR review command
 import { getPrDetailsForReview } from '../githubService.js';
 import { queryLlm } from '../llm.js';
@@ -199,7 +199,7 @@ async function handleReleaseInfoCommand(cleanedQuery, replyTarget, slack, appOct
     // If the regex matched but something went wrong internally (like octokit error, but not config error)
     // or if the initial if (releaseMatch && releaseMatch[1]) failed somehow.
     // The original logic would fall through, so we return false to mimic that.
-    return false; 
+    return false;
 }
 
 /**
@@ -704,4 +704,4 @@ export {
     handleIssueAnalysisCommand,
     handleGithubApiCommand // Export the new handler
     // Add other handlers here as they are created
-}; 
+};

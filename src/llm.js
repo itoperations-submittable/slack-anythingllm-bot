@@ -131,7 +131,7 @@ export async function queryLlm(sphere, anythingLLMThreadSlug, inputText, mode = 
     };
 
     // Log body carefully, remove attachments if sensitive
-    console.log("[LLM Service/queryLlm] Request Body:", JSON.stringify({ ...requestBody, attachments: attachments.length > 0 ? `[${attachments.length} attachment(s)]` : '[]' }, null, 2));
+   // console.log("[LLM Service/queryLlm] Request Body:", JSON.stringify({ ...requestBody, attachments: attachments.length > 0 ? `[${attachments.length} attachment(s)]` : '[]' }, null, 2));
 
     try {
         const llmResponse = await axios.post(
