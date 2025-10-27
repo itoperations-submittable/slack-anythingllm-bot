@@ -26,6 +26,25 @@ import { queryLlm, getWorkspaces, createNewAnythingLLMThread } from './llm.js';
 import { getLatestRelease, getPrDetailsForReview, getGithubIssueDetails, callGithubApi } from './githubService.js';
 import { handleSlackMessageEventInternal } from './handlers/messageHandler.js';
 
+// --- Channel → Workspace mapping ---
+// Prefer the mapping from config.js if present, but also allow an env override (WORKSPACE_MAPPING)
+// Format for env: "C0123ABCD:it-operations,C0456XYZ:hr-helpdesk"
+function parseEnvWorkspaceMapping(raw) {
+  const map = {};
+  if (!raw) return map;
+  for (const pair of raw.split(",")) {
+    const [chan, ws] = pair.split(":").map(s => s?.trim()).filter(Boolean);
+    if (chan && ws) map[chan] = ws;
+  }
+  return map;
+}
+
+// workspaceMapping is imported from config.js.
+// Merge it with the env-based one so either works.
+const ENV_WORKSPACE_MAP = parseEnvWorkspaceMapping(process.env.WORKSPACE_MAPPING);
+const CHANNEL_WORKSPACE_MAP = { ...(workspaceMapping || {}), ...ENV_WORKSPACE_MAP };
+console.log("[Slack] WORKSPACE_MAPPING merged:", CHANNEL_WORKSPACE_MAP);
+
 // Initialize Slack clients
 export const slack = new WebClient(botToken);
 const slackEvents = createEventAdapter(signingSecret, { includeBody: true });
@@ -95,6 +114,16 @@ async function handleSlackEvent(event, body) {
     }
 
         const { subtype, user: messageUserId, channel: channelId, text = '' } = event;
+
+	// --- Force workspace by channel (if mapped) by injecting a #workspace tag into event.text ---
+	// This keeps the rest of the pipeline unchanged (handlers already understand #workspace tags).
+	const forcedWorkspace = CHANNEL_WORKSPACE_MAP[channelId];
+	if (forcedWorkspace) {
+  	const withoutLeadingTag = text.replace(/^#[a-z0-9\-_]+\s+/i, ""); // strip any existing leading #tag
+  	event.text = `#${forcedWorkspace} ${withoutLeadingTag}`.trim();
+  	console.log(`[Routing] Forcing workspace "${forcedWorkspace}" for channel ${channelId}`);
+	}
+
 
         // Filter out unwanted events
         if ( subtype === 'bot_message' || subtype === 'message_deleted' || subtype === 'message_changed' ||
